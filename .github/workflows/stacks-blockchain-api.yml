@@ -444,8 +444,7 @@ jobs:
         uses: docker/metadata-action@v3
         with:
           images: |
-            blockstack/${{ github.workflow }}
-            hirosystems/${{ github.workflow }}
+            phx.ocir.io/ax3gejcudsku/${{ github.workflow }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -457,8 +456,7 @@ jobs:
         uses: docker/metadata-action@v3
         with:
           images: |
-            blockstack/${{ github.workflow }}-standalone
-            hirosystems/${{ github.workflow }}-standalone
+            phx.ocir.io/ax3gejcudsku/${{ github.workflow }}-standalone
           tags: |
             type=ref,event=branch
             type=ref,event=pr
