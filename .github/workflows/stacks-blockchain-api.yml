@@ -13,23 +13,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  notify-start:
-    runs-on: ubuntu-latest
-    # Only run on non-PR events or only PRs that aren't from forks
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    outputs:
-      slack_message_id: ${{ steps.slack.outputs.message_id }}
-    steps:
-      - name: Notify slack start
-        if: success()
-        id: slack
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        uses: voxmedia/github-action-slack-notify-build@v1.1.2
-        with:
-          channel: devops-notify
-          status: STARTING
-          color: warning
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -432,7 +415,6 @@ jobs:
       - test-rosetta
       - test-rosetta-cli-construction
       - test-rosetta-cli-data
-      - test-tokens
     steps:
       - uses: actions/checkout@v2
         with:
@@ -446,8 +428,6 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SEMANTIC_RELEASE_PACKAGE: ${{ github.workflow }}
         with:
           extra_plugins: |
@@ -485,12 +465,13 @@ jobs:
             type=semver,pattern={{version}},value=${{ steps.semantic.outputs.new_release_version }},enable=${{ steps.semantic.outputs.new_release_version != '' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.semantic.outputs.new_release_version }},enable=${{ steps.semantic.outputs.new_release_version != '' }}
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v1
+      - name: Login to Oracle CR
+        uses: docker/login-action@v1 
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
+          registry: phx.ocir.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+          
       - name: Build/Tag/Push Image
         uses: docker/build-push-action@v2
         with:
@@ -511,37 +492,3 @@ jobs:
           cache-to: type=gha,mode=max
           # Only push if (there's a new release on main branch, or if building a non-main branch) and (Only run on non-PR events or only PRs that aren't from forks)
           push: ${{ (github.ref != 'refs/heads/master' || steps.semantic.outputs.new_release_version != '') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-
-  notify-end:
-    runs-on: ubuntu-latest
-    needs:
-      - notify-start
-      - lint
-      - lint-docs
-      - test
-      - test-rosetta
-      - build-publish
-    # Only run on non-PR events or only PRs that aren't from forks
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    steps:
-      - name: Notify slack success
-        if: needs.notify-start.result != 'failure' && needs.lint.result != 'failure' && needs.lint-docs.result != 'failure' && needs.test.result != 'failure' && needs.build-publish.result != 'failure'
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        uses: voxmedia/github-action-slack-notify-build@v1.1.2
-        with:
-          message_id: ${{ needs.notify-start.outputs.slack_message_id }}
-          channel: devops-notify
-          status: SUCCESS
-          color: good
-
-      - name: Notify slack fail
-        if: needs.notify-start.result == 'failure' || needs.lint.result == 'failure' || needs.lint-docs.result == 'failure' || needs.test.result == 'failure' || needs.build-publish.result == 'failure'
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        uses: voxmedia/github-action-slack-notify-build@v1.1.2
-        with:
-          message_id: ${{ needs.notify-start.outputs.slack_message_id }}
-          channel: devops-notify
-          status: FAILED
-          color: danger
