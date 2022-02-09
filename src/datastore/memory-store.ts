@@ -39,6 +39,8 @@ import {
   DbNonFungibleTokenMetadata,
   DbTokenMetadataQueueEntry,
   DbChainTip,
+  NftHoldingInfoWithTxMetadata,
+  NftEventWithTxMetadata,
 } from './common';
 import { logger, FoundOrNot } from '../helpers';
 import { AddressTokenOfferingLocked, TransactionType } from '@stacks/stacks-blockchain-api-types';
@@ -570,6 +572,13 @@ export class MemoryDataStore
     throw new Error('not yet implemented');
   }
 
+  getAddressNonceAtBlock(args: {
+    stxAddress: string;
+    blockIdentifier: BlockIdentifier;
+  }): Promise<FoundOrNot<{ lastExecutedTxNonce: number | null; possibleNextNonce: number }>> {
+    throw new Error('not yet implemented');
+  }
+
   getAddressNonces(args: {
     stxAddress: string;
   }): Promise<{
@@ -634,6 +643,38 @@ export class MemoryDataStore
   }
 
   getRawTx(txId: string): Promise<FoundOrNot<RawTxQueryResult>> {
+    throw new Error('Method not implemented.');
+  }
+
+  getNftHoldings(args: {
+    principal: string;
+    assetIdentifiers?: string[];
+    limit: number;
+    offset: number;
+    includeUnanchored: boolean;
+    includeTxMetadata: boolean;
+  }): Promise<{ results: NftHoldingInfoWithTxMetadata[]; total: number }> {
+    throw new Error('Method not implemented.');
+  }
+
+  getNftHistory(args: {
+    assetIdentifier: string;
+    value: string;
+    limit: number;
+    offset: number;
+    blockHeight: number;
+    includeTxMetadata: boolean;
+  }): Promise<{ results: NftEventWithTxMetadata[]; total: number }> {
+    throw new Error('Method not implemented.');
+  }
+
+  getNftMints(args: {
+    assetIdentifier: string;
+    limit: number;
+    offset: number;
+    blockHeight: number;
+    includeTxMetadata: boolean;
+  }): Promise<{ results: NftEventWithTxMetadata[]; total: number }> {
     throw new Error('Method not implemented.');
   }
 
@@ -710,10 +751,10 @@ export class MemoryDataStore
   }
 
   getTxsFromBlock(
-    blockHash: string,
+    blockIdentifer: BlockIdentifier,
     limit: number,
     offset: number
-  ): Promise<{ results: DbTx[]; total: number }> {
+  ): Promise<FoundOrNot<{ results: DbTx[]; total: number }>> {
     throw new Error('Method not implemented');
   }
   getMinersRewardsAtHeight({ blockHeight }: { blockHeight: number }): Promise<DbMinerReward[]> {

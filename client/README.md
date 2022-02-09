@@ -1,6 +1,5 @@
 # @stacks/blockchain-api-client
 [![NPM Package](https://img.shields.io/npm/v/@stacks/blockchain-api-client.svg?style=flat-square)](https://www.npmjs.org/package/@stacks/blockchain-api-client)
-[![Build Status](https://github.com/hirosystems/stacks-blockchain-api/workflows/stacks-blockchain-api/badge.svg)](https://github.com/hirosystems/stacks-blockchain-api/actions)
 
 A JS Client for the Stacks Blockchain API
 
@@ -11,6 +10,10 @@ This package provides the ability to:
 - Execute REST API requests against the Stacks Blockchain API
 - Subscribe to WebSockets or Socket.io for real-time Stacks updates (see [Available Updates](#Available-Updates))
 - Full type safety for WebSocket and API requests and responses
+
+## Documentation
+
+The documentation for the client library is published as [github pages](https://hirosystems.github.io/stacks-blockchain-api/client/).
 
 ## Installation
 

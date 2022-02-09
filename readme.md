@@ -1,23 +1,24 @@
 # @hirosystems/stacks-blockchain-api
 
-[![stacks-blockchain-api](https://github.com/hirosystems/stacks-blockchain-api/actions/workflows/stacks-blockchain-api.yml/badge.svg?branch=master)](https://github.com/hirosystems/stacks-blockchain-api/actions/workflows/stacks-blockchain-api.yml)
-
-[![Gitpod ready-to-code](https://img.shields.io/badge/Gitpod-ready--to--code-blue?logo=gitpod)](https://gitpod.io/#https://github.com/hirosystems/stacks-blockchain-api)
+[![CI](https://github.com/hirosystems/stacks-blockchain-api/actions/workflows/ci.yml/badge.svg)](https://github.com/hirosystems/stacks-blockchain-api/actions/workflows/ci.yml)
+[![GitHub Releases](https://img.shields.io/github/v/release/hirosystems/stacks-blockchain-api?display_name=release)](https://github.com/hirosystems/stacks-blockchain-api/releases/latest)
+[![Docker Pulls](https://img.shields.io/docker/pulls/blockstack/stacks-blockchain-api-standalone)](https://hub.docker.com/r/hirosystems/stacks-blockchain-api-standalone/)
+[![NPM client package](https://img.shields.io/badge/npm-%40stacks%2Fblockchain--api--client-blue)](https://www.npmjs.org/package/@stacks/blockchain-api-client)
 
 ## Quick start
 
-A self-contained Docker image is provided which starts a Stacks 2.0 blockchain and API instance.
+A self-contained Docker image is provided which starts a Stacks 2.05 blockchain and API instance.
 
 Ensure Docker is installed, then run the command:
 
 ```shell
-docker run -p 3999:3999 blockstack/stacks-blockchain-api-standalone
+docker run -p 3999:3999 hirosystems/stacks-blockchain-api-standalone
 ```
 
 Similarly, a "mocknet" instance can be started. This runs a local node, isolated from the testnet/mainnet:
 
 ```shell
-docker run -p 3999:3999 -e STACKS_NETWORK=mocknet blockstack/stacks-blockchain-api-standalone
+docker run -p 3999:3999 -e STACKS_NETWORK=mocknet hirosystems/stacks-blockchain-api-standalone
 ```
 
 Once the blockchain has synced with network, the API will be available at:
@@ -59,23 +60,39 @@ If upgrading the API to a new major version (e.g. `3.0.0` to `4.0.0`) then the P
 
 [Event Replay](#event-replay) must be used when upgrading major versions. Follow the event replay [instructions](#event-replay-instructions) below. Failure to do so will require wiping both the Stacks Blockchain chainstate data and the API Postgres database, and re-syncing from scratch.
 
-### Offline mode
+## API Run Modes
 
-In Offline mode app runs without a stacks-node or postgres connection. In this mode, only the given rosetta endpoints are supported:
-https://www.rosetta-api.org/docs/node_deployment.html#offline-mode-endpoints .
+The API supports a series of run modes, each accomodating different use cases for scaling and data access by toggling [architecture](#architecture) components on or off depending on its objective.
 
-For running offline mode set an environment variable `STACKS_API_OFFLINE_MODE=1`
+### Default mode (Read-write)
+
+The default mode runs with all components enabled. It consumes events from a Stacks node, writes them to a postgres database, and serves API endpoints.
+
+### Write-only mode
+
+During Write-only mode, the API only runs the Stacks node events server to populate the postgres database but it does not serve any API endpoints.
+
+This mode is very useful when you need to consume blockchain data from the postgres database directly and you're not interested in taking on the overhead of running an API web server.
+
+For write-only mode, set the environment variable `STACKS_API_MODE=writeonly`.
 
 ### Read-only mode
 
-During Read-only mode, the API runs without an internal event server that listens to events from a stacks-node.
+During Read-only mode, the API runs without an internal event server that listens to events from a Stacks node.
 The API only reads data from the connected postgres database when building endpoint responses.
 In order to keep serving updated blockchain data, this mode requires the presence of another API instance that keeps writing stacks-node events to the same database.
 
 This mode is very useful when building an environment that load-balances incoming HTTP requests between multiple API instances that can be scaled up and down very quickly.
 Read-only instances support websockets and socket.io clients.
 
-For read-only mode, set the environment variable `STACKS_READ_ONLY_MODE=1`.
+For read-only mode, set the environment variable `STACKS_API_MODE=readonly`.
+
+### Offline mode
+
+In Offline mode app runs without a stacks-node or postgres connection. In this mode, only the given rosetta endpoints are supported:
+https://www.rosetta-api.org/docs/node_deployment.html#offline-mode-endpoints.
+
+For running offline mode set an environment variable `STACKS_API_MODE=offline`
 
 ## Event Replay
 
@@ -112,7 +129,6 @@ events should be appended. Example:
 ```
 STACKS_EXPORT_EVENTS_FILE=/tmp/stacks-node-events.tsv
 ```
-
 
 # Client library
 

@@ -5,7 +5,6 @@ import * as expressWinston from 'express-winston';
 import * as winston from 'winston';
 import { v4 as uuid } from 'uuid';
 import * as cors from 'cors';
-import { addAsync, ExpressWithAsync } from '@awaitjs/express';
 import * as WebSocket from 'ws';
 import * as SocketIO from 'socket.io';
 
@@ -26,6 +25,7 @@ import { createRosettaBlockRouter } from './routes/rosetta/block';
 import { createRosettaAccountRouter } from './routes/rosetta/account';
 import { createRosettaConstructionRouter } from './routes/rosetta/construction';
 import { isProdEnv, logError, logger, LogLevel, waiter } from '../helpers';
+import { InvalidRequestError } from '../errors';
 import { createWsRpcRouter } from './routes/ws/ws-rpc';
 import { createSocketIORouter } from './routes/ws/socket-io';
 import { createBurnchainRouter } from './routes/burnchain';
@@ -46,7 +46,7 @@ import { createFeeRateRouter } from './routes/fee-rate';
 import { setResponseNonCacheable } from './controllers/cache-controller';
 
 export interface ApiServer {
-  expressApp: ExpressWithAsync;
+  expressApp: express.Express;
   server: Server;
   wss: WebSocket.Server;
   io: SocketIO.Server;
@@ -67,7 +67,7 @@ export async function startApiServer(opts: {
 }): Promise<ApiServer> {
   const { datastore, chainId, serverHost, serverPort, httpLogLevel } = opts;
 
-  const app = addAsync(express());
+  const app = express();
   const apiHost = serverHost ?? process.env['STACKS_BLOCKCHAIN_API_HOST'];
   const apiPort = serverPort ?? parseInt(process.env['STACKS_BLOCKCHAIN_API_PORT'] ?? '');
 
@@ -154,8 +154,13 @@ export async function startApiServer(opts: {
   app.use(
     '/extended/v1',
     (() => {
-      const router = addAsync(express.Router());
+      const router = express.Router();
       router.use(cors());
+      router.use((req, res, next) => {
+        // Set caching on all routes to be disabled by default, individual routes can override
+        res.set('Cache-Control', 'no-store');
+        next();
+      });
       router.use('/tx', createTxRouter(datastore));
       router.use('/block', createBlockRouter(datastore));
       router.use('/microblock', createMicroblockRouter(datastore));
@@ -180,7 +185,7 @@ export async function startApiServer(opts: {
   app.use(
     '/v2',
     (() => {
-      const router = addAsync(express.Router());
+      const router = express.Router();
       router.use(cors());
       router.use('/prices', createBnsPriceRouter(datastore, chainId));
       router.use('/', createCoreNodeRpcProxyRouter(datastore));
@@ -193,7 +198,7 @@ export async function startApiServer(opts: {
   app.use(
     '/rosetta/v1',
     (() => {
-      const router = addAsync(express.Router());
+      const router = express.Router();
       router.use(cors());
       router.use('/network', createRosettaNetworkRouter(datastore, chainId));
       router.use('/mempool', createRosettaMempoolRouter(datastore, chainId));
@@ -208,7 +213,7 @@ export async function startApiServer(opts: {
   app.use(
     '/v1',
     (() => {
-      const router = addAsync(express.Router());
+      const router = express.Router();
       router.use(cors());
       router.use('/namespaces', createBnsNamespacesRouter(datastore));
       router.use('/names', createBnsNamesRouter(datastore));
@@ -242,12 +247,16 @@ export async function startApiServer(opts: {
       setResponseNonCacheable(res);
     }
     if (error && !res.headersSent) {
-      res.status(500);
-      const errorTag = uuid();
-      Object.assign(error, { errorTag: errorTag });
-      res
-        .json({ error: error.toString(), stack: (error as Error).stack, errorTag: errorTag })
-        .end();
+      if (error instanceof InvalidRequestError) {
+        res.status(error.status).json({ error: error.message }).end();
+      } else {
+        res.status(500);
+        const errorTag = uuid();
+        Object.assign(error, { errorTag: errorTag });
+        res
+          .json({ error: error.toString(), stack: (error as Error).stack, errorTag: errorTag })
+          .end();
+      }
     }
     next(error);
   }) as express.ErrorRequestHandler);
@@ -257,6 +266,10 @@ export async function startApiServer(opts: {
       winstonInstance: logger as winston.Logger,
       metaField: (null as unknown) as string,
       blacklistedMetaFields: ['trace', 'os', 'process'],
+      skip: (_req, _res, error) => {
+        // Do not log errors for client 4xx responses
+        return error instanceof InvalidRequestError;
+      },
     })
   );
 
