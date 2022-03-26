@@ -33,6 +33,7 @@ import * as pgConnectionString from 'pg-connection-string';
 import { parseDbEvent } from '../api/controllers/db-controller';
 import * as assert from 'assert';
 import { I32_MAX } from '../helpers';
+import { intCV, serializeCV } from '@stacks/transactions';
 
 describe('in-memory datastore', () => {
   let db: MemoryDataStore;
@@ -68,11 +69,11 @@ describe('in-memory datastore', () => {
   });
 });
 
-function testEnvVars(envVars: Record<string, string | undefined>, use: () => void): void;
 function testEnvVars(
   envVars: Record<string, string | undefined>,
   use: () => Promise<void>
 ): Promise<void>;
+function testEnvVars(envVars: Record<string, string | undefined>, use: () => void): void;
 function testEnvVars(
   envVars: Record<string, string | undefined>,
   use: () => void | Promise<void>
@@ -93,13 +94,16 @@ function testEnvVars(
     added.forEach(k => delete process.env[k]);
     Object.entries(existing).forEach(([k, v]) => (process.env[k] = v));
   };
+  let runFn: void | Promise<void>;
   try {
-    const runFn = use();
+    runFn = use();
     if (runFn instanceof Promise) {
       return runFn.finally(() => restoreEnvVars());
     }
   } finally {
-    restoreEnvVars();
+    if (!(runFn instanceof Promise)) {
+      restoreEnvVars();
+    }
   }
 }
 
@@ -110,13 +114,13 @@ describe('postgres datastore', () => {
   beforeEach(async () => {
     process.env.PG_DATABASE = 'postgres';
     await cycleMigrations();
-    db = await PgDataStore.connect();
+    db = await PgDataStore.connect({ usageName: 'tests' });
     client = await db.pool.connect();
   });
 
   test('postgres uri config', () => {
     const uri =
-      'postgresql://test_user:secret_password@database.server.com:3211/test_db?ssl=true&currentSchema=test_schema';
+      'postgresql://test_user:secret_password@database.server.com:3211/test_db?ssl=true&currentSchema=test_schema&application_name=test-conn-str';
     testEnvVars(
       {
         PG_CONNECTION_URI: uri,
@@ -127,10 +131,11 @@ describe('postgres datastore', () => {
         PG_PORT: undefined,
         PG_SSL: undefined,
         PG_SCHEMA: undefined,
+        PG_APPLICATION_NAME: undefined,
       },
       () => {
-        const config = getPgClientConfig();
-        const parsedUrl = pgConnectionString.parse(uri);
+        const config = getPgClientConfig({ usageName: 'tests' });
+        const parsedUrl = pgConnectionString.parse(config.connectionString ?? '');
         expect(parsedUrl.database).toBe('test_db');
         expect(parsedUrl.user).toBe('test_user');
         expect(parsedUrl.password).toBe('secret_password');
@@ -138,6 +143,7 @@ describe('postgres datastore', () => {
         expect(parsedUrl.port).toBe('3211');
         expect(parsedUrl.ssl).toBe(true);
         expect(config.schema).toBe('test_schema');
+        expect(parsedUrl.application_name).toBe('test-conn-str:tests');
       }
     );
   });
@@ -153,9 +159,10 @@ describe('postgres datastore', () => {
         PG_PORT: '9876',
         PG_SSL: 'true',
         PG_SCHEMA: 'pg_schema_schema1',
+        PG_APPLICATION_NAME: 'test-env-vars',
       },
       () => {
-        const config = getPgClientConfig();
+        const config = getPgClientConfig({ usageName: 'tests' });
         expect(config.database).toBe('pg_db_db1');
         expect(config.user).toBe('pg_user_user1');
         expect(config.password).toBe('pg_password_password1');
@@ -163,6 +170,27 @@ describe('postgres datastore', () => {
         expect(config.port).toBe(9876);
         expect(config.ssl).toBe(true);
         expect(config.schema).toBe('pg_schema_schema1');
+        expect(config.application_name).toBe('test-env-vars:tests');
+      }
+    );
+  });
+
+  test('postgres connection application_name', async () => {
+    await testEnvVars(
+      {
+        PG_APPLICATION_NAME: 'test-app-name',
+      },
+      async () => {
+        const testDb = await PgDataStore.connect({
+          usageName: 'test-usage-name',
+          skipMigrations: true,
+        });
+        try {
+          const name = await testDb.getConnectionApplicationName();
+          expect(name).toStrictEqual('test-app-name:test-usage-name;datastore-crud');
+        } finally {
+          await testDb.close();
+        }
       }
     );
   });
@@ -183,7 +211,7 @@ describe('postgres datastore', () => {
       },
       () => {
         expect(() => {
-          const config = getPgClientConfig();
+          const config = getPgClientConfig({ usageName: 'tests' });
         }).toThrowError();
       }
     );
@@ -421,7 +449,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x1234',
       tx_index: 4,
@@ -494,7 +521,6 @@ describe('postgres datastore', () => {
       createFtEvent('none', 'addrA', 'cash', 500_000),
       createFtEvent('addrA', 'none', 'tendies', 1_000_000),
     ];
-
     const ftBurnEvent: DbFtEvent = {
       canonical: true,
       event_type: DbEventTypeId.FungibleTokenAsset,
@@ -509,10 +535,24 @@ describe('postgres datastore', () => {
       sender: 'addrA',
     };
     events.push(ftBurnEvent);
-
-    for (const event of events) {
-      await db.updateFtEvent(client, tx, event);
-    }
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: events,
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
 
     const blockHeight = await db.getMaxBlockHeight(client, { includeUnanchored: false });
     const addrAResult = await db.getFungibleTokenBalances({
@@ -569,7 +609,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x1234',
       tx_index: 4,
@@ -646,7 +685,6 @@ describe('postgres datastore', () => {
       createNFtEvents('none', 'addrA', 'cash', 500),
       createNFtEvents('addrA', 'none', 'tendies', 100),
     ];
-
     const nftBurnEvent: DbNftEvent = {
       canonical: true,
       event_type: DbEventTypeId.NonFungibleTokenAsset,
@@ -662,9 +700,24 @@ describe('postgres datastore', () => {
     };
     events.push([nftBurnEvent]);
 
-    for (const event of events.flat()) {
-      await db.updateNftEvent(client, tx, event);
-    }
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: events.flat(),
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
 
     const blockHeight = await db.getMaxBlockHeight(client, { includeUnanchored: false });
 
@@ -702,7 +755,7 @@ describe('postgres datastore', () => {
     expect([...addrDResult]).toEqual([]);
   });
 
-  test.only('pg block store and retrieve', async () => {
+  test('pg block store and retrieve', async () => {
     const block: DbBlock = {
       block_hash: '0x1234',
       index_block_hash: '0xdeadbeef',
@@ -787,7 +840,7 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
+
     let indexIdIndex = 0;
     const createStxTx = (
       sender: string,
@@ -795,7 +848,7 @@ describe('postgres datastore', () => {
       amount: number,
       dbBlock: DbBlock,
       canonical: boolean = true
-    ): DbTx => {
+    ) => {
       const tx: DbTx = {
         tx_id: '0x1234' + (++indexIdIndex).toString().padStart(4, '0'),
         tx_index: indexIdIndex,
@@ -832,7 +885,19 @@ describe('postgres datastore', () => {
         execution_cost_write_count: 0,
         execution_cost_write_length: 0,
       };
-      return tx;
+      const stxEvent: DbStxEvent = {
+        event_type: DbEventTypeId.StxAsset,
+        amount: BigInt(amount),
+        asset_event_type_id: DbAssetEventTypeId.Transfer,
+        sender: sender,
+        recipient: recipient,
+        block_height: dbBlock.block_height,
+        tx_id: tx.tx_id,
+        tx_index: tx.tx_index,
+        event_index: 0,
+        canonical: tx.canonical,
+      };
+      return { tx, stxEvent };
     };
     const txs = [
       createStxTx('none', 'addrA', 100_000, dbBlock),
@@ -847,9 +912,23 @@ describe('postgres datastore', () => {
       createStxTx('addrE', 'addrF', 2, dbBlock),
       createStxTx('addrE', 'addrF', 2, dbBlock),
     ];
-    for (const tx of txs) {
-      await db.updateTx(client, tx);
-    }
+
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: txs.map(t => ({
+        tx: t.tx,
+        stxEvents: [t.stxEvent],
+        stxLockEvents: [],
+        ftEvents: [],
+        nftEvents: [],
+        contractLogEvents: [],
+        names: [],
+        namespaces: [],
+        smartContracts: [],
+      })),
+    });
 
     const blockHeight = await db.getMaxBlockHeight(client, { includeUnanchored: false });
 
@@ -1001,8 +1080,8 @@ describe('postgres datastore', () => {
     const dbBlock1: DbBlock = {
       block_hash: '0xffff',
       index_block_hash: '0x1235',
-      parent_index_block_hash: '0x5679',
-      parent_block_hash: '0x5670',
+      parent_index_block_hash: dbBlock.index_block_hash,
+      parent_block_hash: dbBlock.block_hash,
       parent_microblock_hash: '',
       parent_microblock_sequence: 0,
       block_height: 2,
@@ -1017,7 +1096,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock1);
     const txs1 = [
       createStxTx('addrA', 'addrB', 100, dbBlock1),
       createStxTx('addrA', 'addrB', 250, dbBlock1),
@@ -1030,13 +1108,26 @@ describe('postgres datastore', () => {
       createStxTx('addrE', 'addrF', 2, dbBlock1),
       createStxTx('addrE', 'addrF', 2, dbBlock1),
     ];
-    for (const tx of txs) {
-      await db.updateTx(client, tx);
-    }
+    await db.update({
+      block: dbBlock1,
+      microblocks: [],
+      minerRewards: [],
+      txs: txs1.map(t => ({
+        tx: t.tx,
+        stxEvents: [t.stxEvent],
+        stxLockEvents: [],
+        ftEvents: [],
+        nftEvents: [],
+        contractLogEvents: [],
+        names: [],
+        namespaces: [],
+        smartContracts: [],
+      })),
+    });
 
     const addrAAtBlockResult = await db.getAddressTxs({
       stxAddress: 'addrA',
-      limit: 3,
+      limit: 1000,
       offset: 0,
       blockHeight: 2,
       atSingleBlock: true,
@@ -1044,14 +1135,14 @@ describe('postgres datastore', () => {
 
     const addrAAllBlockResult = await db.getAddressTxs({
       stxAddress: 'addrA',
-      limit: 3,
+      limit: 1000,
       offset: 0,
       blockHeight: 2,
       atSingleBlock: false,
     });
 
-    expect(addrAAtBlockResult.total).toBe(4);
-    expect(addrAAllBlockResult.total).toBe(8);
+    expect(addrAAtBlockResult.total).toBe(3);
+    expect(addrAAllBlockResult.total).toBe(7);
   });
 
   test('pg get address asset events', async () => {
@@ -1074,7 +1165,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx1: DbTx = {
       tx_id: '0x1234',
       tx_index: 4,
@@ -1137,12 +1227,9 @@ describe('postgres datastore', () => {
       createStxEvent('addrB', 'addrC', 15),
       createStxEvent('addrA', 'addrC', 35),
     ];
-    for (const event of stxEvents) {
-      await db.updateStxEvent(client, tx1, event);
-    }
 
     const tx2: DbTx = {
-      tx_id: '0x1234',
+      tx_id: '0x2234',
       tx_index: 3,
       anchor_mode: 3,
       nonce: 0,
@@ -1214,12 +1301,9 @@ describe('postgres datastore', () => {
       createFtEvent('none', 'addrA', 'cash', 500_000),
       createFtEvent('addrA', 'none', 'tendies', 1_000_000),
     ];
-    for (const event of ftEvents) {
-      await db.updateFtEvent(client, tx2, event);
-    }
 
     const tx3: DbTx = {
-      tx_id: '0x1234',
+      tx_id: '0x3234',
       tx_index: 2,
       anchor_mode: 3,
       nonce: 0,
@@ -1270,7 +1354,7 @@ describe('postgres datastore', () => {
           tx_index: tx3.tx_index,
           block_height: tx3.block_height,
           asset_identifier: assetId,
-          value: Buffer.from([0]),
+          value: serializeCV(intCV(0)),
           recipient,
           sender,
         };
@@ -1295,8 +1379,49 @@ describe('postgres datastore', () => {
       createNFtEvents('addrA', 'none', 'tendies', 1),
     ];
     for (const event of nftEvents.flat()) {
-      await db.updateNftEvent(client, tx3, event);
+      // await db.updateNftEvent(client, tx3, event);
     }
+
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx1,
+          stxEvents: stxEvents,
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+        {
+          tx: tx2,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: ftEvents,
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+        {
+          tx: tx3,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: nftEvents.flat(),
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
 
     const blockHeight = await db.getMaxBlockHeight(client, { includeUnanchored: false });
 
@@ -1340,7 +1465,7 @@ describe('postgres datastore', () => {
       {
         event_index: 5,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
@@ -1352,7 +1477,7 @@ describe('postgres datastore', () => {
       {
         event_index: 3,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
@@ -1364,7 +1489,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
@@ -1376,7 +1501,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
@@ -1388,7 +1513,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'cash',
@@ -1400,7 +1525,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'tendies',
@@ -1412,7 +1537,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
@@ -1424,7 +1549,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
@@ -1436,7 +1561,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
@@ -1448,7 +1573,7 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x2234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
@@ -1460,517 +1585,517 @@ describe('postgres datastore', () => {
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'gox',
           sender: 'addrA',
           recipient: 'addrC',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'cash',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'cash',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'cash',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'cash',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'cash',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'tendies',
           sender: 'addrA',
           recipient: 'none',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'none',
           recipient: 'addrA',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
       {
         event_index: 0,
         event_type: 'non_fungible_token_asset',
-        tx_id: '0x1234',
+        tx_id: '0x3234',
         asset: {
           asset_event_type: 'transfer',
           asset_id: 'bux',
           sender: 'addrA',
           recipient: 'addrB',
-          value: { hex: '0x00', repr: '0' },
+          value: { hex: '0x0000000000000000000000000000000000', repr: '0' },
         },
       },
     ]);
@@ -1996,7 +2121,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x1234',
       tx_index: 4,
@@ -2031,7 +2155,24 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateTx(client, tx);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
     const txQuery = await db.getTx({ txId: tx.tx_id, includeUnanchored: false });
     assert(txQuery.found);
     expect(txQuery.result).toEqual(tx);
@@ -2057,7 +2198,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x421234',
       tx_index: 4,
@@ -2097,7 +2237,24 @@ describe('postgres datastore', () => {
     tx.token_transfer_amount = 34n;
     tx.token_transfer_memo = Buffer.from('thx');
     tx.token_transfer_recipient_address = 'recipient-addr';
-    await db.updateTx(client, tx);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
     const txQuery = await db.getTx({ txId: tx.tx_id, includeUnanchored: false });
     assert(txQuery.found);
     expect(txQuery.result).toEqual(tx);
@@ -2123,7 +2280,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x421234',
       tx_index: 4,
@@ -2162,7 +2318,32 @@ describe('postgres datastore', () => {
     );
     tx.smart_contract_contract_id = 'my-contract';
     tx.smart_contract_source_code = '(src)';
-    await db.updateTx(client, tx);
+    const contract: DbSmartContract = {
+      tx_id: tx.tx_id,
+      canonical: true,
+      block_height: dbBlock.block_height,
+      contract_id: 'my-contract',
+      source_code: '(src)',
+      abi: '{"some":"abi"}',
+    };
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [contract],
+        },
+      ],
+    });
     const txQuery = await db.getTx({ txId: tx.tx_id, includeUnanchored: false });
     assert(txQuery.found);
     expect(txQuery.result).toEqual(tx);
@@ -2188,7 +2369,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x421234',
       tx_index: 4,
@@ -2228,7 +2408,24 @@ describe('postgres datastore', () => {
     tx.contract_call_contract_id = 'my-contract';
     tx.contract_call_function_name = 'my-fn';
     tx.contract_call_function_args = Buffer.from('test');
-    await db.updateTx(client, tx);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
     const txQuery = await db.getTx({ txId: tx.tx_id, includeUnanchored: false });
     assert(txQuery.found);
     expect(txQuery.result).toEqual(tx);
@@ -2254,7 +2451,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x421234',
       tx_index: 4,
@@ -2293,7 +2489,24 @@ describe('postgres datastore', () => {
     );
     tx.poison_microblock_header_1 = Buffer.from('poison A');
     tx.poison_microblock_header_2 = Buffer.from('poison B');
-    await db.updateTx(client, tx);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
     const txQuery = await db.getTx({ txId: tx.tx_id, includeUnanchored: false });
     assert(txQuery.found);
     expect(txQuery.result).toEqual(tx);
@@ -2319,7 +2532,6 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const tx: DbTx = {
       tx_id: '0x421234',
       tx_index: 4,
@@ -2357,7 +2569,24 @@ describe('postgres datastore', () => {
       new Error('new row for relation "txs" violates check constraint "valid_coinbase"')
     );
     tx.coinbase_payload = Buffer.from('coinbase hi');
-    await db.updateTx(client, tx);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
     const txQuery = await db.getTx({ txId: tx.tx_id, includeUnanchored: false });
     assert(txQuery.found);
     expect(txQuery.result).toEqual(tx);
@@ -3700,7 +3929,7 @@ describe('postgres datastore', () => {
       contract_id: 'my-contract',
       block_height: tx3.block_height,
       source_code: '(my-src)',
-      abi: '{thing:1}',
+      abi: '{"thing":1}',
     };
 
     await db.update({
@@ -4240,8 +4469,12 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
-
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [],
+    });
     const namespace: DbBnsNamespace = {
       namespace_id: 'abc',
       address: 'ST2ZRX0K27GW0SP3GJCEMHD95TQGJMKB7G9Y0X1MH',
@@ -4295,8 +4528,12 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
-
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [],
+    });
     const name: DbBnsName = {
       name: 'xyz',
       address: 'ST5RRX0K27GW0SP3GJCEMHD95TQGJMKB7G9Y0X1ZA',
@@ -4350,8 +4587,12 @@ describe('postgres datastore', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
-
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [],
+    });
     const subdomain: DbBnsSubdomain = {
       namespace_id: 'test',
       name: 'nametest',

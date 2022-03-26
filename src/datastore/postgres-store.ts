@@ -119,7 +119,20 @@ const MIGRATIONS_TABLE = 'pgmigrations';
 const MIGRATIONS_DIR = path.join(APP_DIR, 'migrations');
 
 type PgClientConfig = ClientConfig & { schema?: string };
-export function getPgClientConfig(primary: boolean = false): PgClientConfig {
+type PgPoolConfig = PoolConfig & { schema?: string };
+
+/**
+ * @typeParam TGetPoolConfig - If specified as true, returns a PoolConfig object where max connections are configured. Otherwise, returns a regular ClientConfig.
+ */
+export function getPgClientConfig<TGetPoolConfig extends boolean = false>({
+  usageName,
+  primary = false,
+  getPoolConfig,
+}: {
+  usageName: string;
+  primary?: boolean;
+  getPoolConfig?: TGetPoolConfig;
+}): TGetPoolConfig extends true ? PgPoolConfig : PgClientConfig {
   // Retrieve a postgres ENV value depending on the target database server (read-replica/default or primary).
   // We will fall back to read-replica values if a primary value was not given.
   // See the `.env` file for more information on these options.
@@ -135,7 +148,9 @@ export function getPgClientConfig(primary: boolean = false): PgClientConfig {
     port: pgEnvValue('PORT'),
     ssl: pgEnvValue('SSL'),
     schema: pgEnvValue('SCHEMA'),
+    applicationName: pgEnvValue('APPLICATION_NAME'),
   };
+  const defaultAppName = 'stacks-blockchain-api';
   const pgConnectionUri = pgEnvValue('CONNECTION_URI');
   const pgConfigEnvVar = Object.entries(pgEnvVars).find(([, v]) => typeof v === 'string')?.[0];
   if (pgConfigEnvVar && pgConnectionUri) {
@@ -143,6 +158,7 @@ export function getPgClientConfig(primary: boolean = false): PgClientConfig {
       `Both PG_CONNECTION_URI and ${pgConfigEnvVar} environmental variables are defined. PG_CONNECTION_URI must be defined without others or omitted.`
     );
   }
+  let clientConfig: PgClientConfig;
   if (pgConnectionUri) {
     const uri = new URL(pgConnectionUri);
     const searchParams = Object.fromEntries(
@@ -155,13 +171,15 @@ export function getPgClientConfig(primary: boolean = false): PgClientConfig {
       searchParams['searchpath'] ??
       searchParams['search_path'] ??
       searchParams['schema'];
-    const config: PgClientConfig = {
-      connectionString: pgConnectionUri,
+    const appName = `${uri.searchParams.get('application_name') ?? defaultAppName}:${usageName}`;
+    uri.searchParams.set('application_name', appName);
+    clientConfig = {
+      connectionString: uri.toString(),
       schema,
     };
-    return config;
   } else {
-    const config: PgClientConfig = {
+    const appName = `${pgEnvVars.applicationName ?? defaultAppName}:${usageName}`;
+    clientConfig = {
       database: pgEnvVars.database,
       user: pgEnvVars.user,
       password: pgEnvVars.password,
@@ -169,13 +187,23 @@ export function getPgClientConfig(primary: boolean = false): PgClientConfig {
       port: parsePort(pgEnvVars.port),
       ssl: parseArgBoolean(pgEnvVars.ssl),
       schema: pgEnvVars.schema,
+      application_name: appName,
     };
-    return config;
+  }
+  if (getPoolConfig) {
+    const poolConfig: PgPoolConfig = { ...clientConfig };
+    const pgConnectionPoolMaxEnv = process.env['PG_CONNECTION_POOL_MAX'];
+    if (pgConnectionPoolMaxEnv) {
+      poolConfig.max = Number.parseInt(pgConnectionPoolMaxEnv);
+    }
+    return poolConfig;
+  } else {
+    return clientConfig;
   }
 }
 
 export async function runMigrations(
-  clientConfig: PgClientConfig = getPgClientConfig(),
+  clientConfig: PgClientConfig = getPgClientConfig({ usageName: 'schema-migrations' }),
   direction: 'up' | 'down' = 'up',
   opts?: {
     // Bypass the NODE_ENV check when performing a "down" migration which irreversibly drops data.
@@ -188,7 +216,6 @@ export async function runMigrations(
         'Set NODE_ENV to "test" or "development" to enable migration testing.'
     );
   }
-  clientConfig = clientConfig ?? getPgClientConfig();
   const client = new Client(clientConfig);
   try {
     await client.connect();
@@ -221,7 +248,7 @@ export async function cycleMigrations(opts?: {
   // Bypass the NODE_ENV check when performing a "down" migration which irreversibly drops data.
   dangerousAllowDataLoss?: boolean;
 }): Promise<void> {
-  const clientConfig = getPgClientConfig();
+  const clientConfig = getPgClientConfig({ usageName: 'cycle-migrations' });
 
   await runMigrations(clientConfig, 'down', opts);
   await runMigrations(clientConfig, 'up', opts);
@@ -233,7 +260,7 @@ export async function dangerousDropAllTables(opts?: {
   if (opts?.acknowledgePotentialCatastrophicConsequences !== 'yes') {
     throw new Error('Dangerous usage error.');
   }
-  const clientConfig = getPgClientConfig();
+  const clientConfig = getPgClientConfig({ usageName: 'dangerous-drop-all-tables' });
   const client = new Client(clientConfig);
   try {
     await client.connect();
@@ -259,6 +286,36 @@ export async function dangerousDropAllTables(opts?: {
   } finally {
     await client.end();
   }
+}
+
+/**
+ * Checks if a given error from the pg lib is a connection error (i.e. the query is retryable).
+ * If true then returns a normalized error message, otherwise returns false.
+ */
+function isPgConnectionError(error: any): string | false {
+  if (error.code === 'ECONNREFUSED') {
+    return 'Postgres connection ECONNREFUSED';
+  } else if (error.code === 'ETIMEDOUT') {
+    return 'Postgres connection ETIMEDOUT';
+  } else if (error.code === 'ENOTFOUND') {
+    return 'Postgres connection ENOTFOUND';
+  } else if (error.message) {
+    const msg = (error as Error).message.toLowerCase();
+    if (msg.includes('database system is starting up')) {
+      return 'Postgres connection failed while database system is starting up';
+    } else if (msg.includes('database system is shutting down')) {
+      return 'Postgres connection failed while database system is shutting down';
+    } else if (msg.includes('connection terminated unexpectedly')) {
+      return 'Postgres connection terminated unexpectedly';
+    } else if (msg.includes('connection terminated')) {
+      return 'Postgres connection terminated';
+    } else if (msg.includes('connection error')) {
+      return 'Postgres client has encountered a connection error and is not queryable';
+    } else if (msg.includes('terminating connection due to unexpected postmaster exit')) {
+      return 'Postgres connection terminating due to unexpected postmaster exit';
+    }
+  }
+  return false;
 }
 
 /**
@@ -330,8 +387,6 @@ const MICROBLOCK_COLUMNS = `
   parent_burn_block_height, parent_burn_block_time, parent_burn_block_hash,
   index_block_hash, block_hash
 `;
-
-const COUNT_COLUMN = `(COUNT(*) OVER())::integer AS count`;
 
 /**
  * Shorthand function to generate a list of common columns to query from the `txs` table. A parameter
@@ -414,6 +469,15 @@ function abiColumn(tableName: string = 'txs'): string {
     `;
 }
 
+/**
+ * Shorthand for a count column that aggregates over the complete query window outside of LIMIT/OFFSET.
+ * @param alias - Count column alias
+ * @returns `string` - count column select statement portion
+ */
+function countOverColumn(alias: string = 'count'): string {
+  return `(COUNT(*) OVER())::INTEGER AS ${alias}`;
+}
+
 interface BlockQueryResult {
   block_hash: Buffer;
   index_block_hash: Buffer;
@@ -492,7 +556,7 @@ interface MempoolTxQueryResult {
   coinbase_payload?: Buffer;
 
   // sending abi in case tx is contract call
-  abi?: string;
+  abi: unknown | null;
 }
 
 interface TxQueryResult {
@@ -556,7 +620,7 @@ interface TxQueryResult {
 }
 
 interface ContractTxQueryResult extends TxQueryResult {
-  abi?: string;
+  abi?: unknown | null;
 }
 
 interface MempoolTxIdQueryResult {
@@ -749,21 +813,9 @@ export class PgDataStore
         return client;
       } catch (error: any) {
         // Check for transient errors, and retry after 1 second
-        if (error.code === 'ECONNREFUSED') {
-          logger.warn(`Postgres connection ECONNREFUSED, will retry, attempt #${retryAttempts}`);
-          await timeout(1000);
-        } else if (error.code === 'ETIMEDOUT') {
-          logger.warn(`Postgres connection ETIMEDOUT, will retry, attempt #${retryAttempts}`);
-          await timeout(1000);
-        } else if (error.message === 'the database system is starting up') {
-          logger.warn(
-            `Postgres connection failed while database system is restarting, will retry, attempt #${retryAttempts}`
-          );
-          await timeout(1000);
-        } else if (error.message === 'Connection terminated unexpectedly') {
-          logger.warn(
-            `Postgres connection terminated unexpectedly, will retry, attempt #${retryAttempts}`
-          );
+        const pgConnectionError = isPgConnectionError(error);
+        if (pgConnectionError) {
+          logger.warn(`${pgConnectionError}, will retry, attempt #${retryAttempts}`);
           await timeout(1000);
         } else {
           throw error;
@@ -829,42 +881,42 @@ export class PgDataStore
   }
 
   async storeRawEventRequest(eventPath: string, payload: string): Promise<void> {
-    await this.query(async client => {
-      const insertResult = await client.query<{ id: string }>(
-        `
-        INSERT INTO event_observer_requests(
+    // To avoid depending on the DB more than once and to allow the query transaction to settle,
+    // we'll take the complete insert result and move that to the output TSV file instead of taking
+    // only the `id` and performing a `COPY` of that row later.
+    const insertResult = await this.queryTx(async client => {
+      return await client.query<{
+        id: string;
+        receive_timestamp: string;
+        event_path: string;
+        payload: string;
+      }>(
+        `INSERT INTO event_observer_requests(
           event_path, payload
         ) values($1, $2)
-        RETURNING id
-        `,
+        RETURNING id, receive_timestamp::text, event_path, payload::text`,
         [eventPath, payload]
       );
-      if (insertResult.rowCount !== 1) {
-        throw new Error(
-          `Unexpected row count ${insertResult.rowCount} when storing event_observer_requests entry`
-        );
-      }
-      const exportEventsFile = process.env['STACKS_EXPORT_EVENTS_FILE'];
-      if (exportEventsFile) {
-        const writeStream = fs.createWriteStream(exportEventsFile, {
-          flags: 'a', // append or create if not exists
-        });
-        try {
-          const queryStream = client.query(
-            pgCopyStreams.to(
-              `COPY (SELECT * FROM event_observer_requests WHERE id = ${insertResult.rows[0].id}) TO STDOUT ENCODING 'UTF8'`
-            )
-          );
-          await pipelineAsync(queryStream, writeStream);
-        } finally {
-          writeStream.close();
-        }
-      }
     });
+    if (insertResult.rowCount !== 1) {
+      throw new Error(
+        `Unexpected row count ${insertResult.rowCount} when storing event_observer_requests entry`
+      );
+    }
+    const exportEventsFile = process.env['STACKS_EXPORT_EVENTS_FILE'];
+    if (exportEventsFile) {
+      const result = insertResult.rows[0];
+      const tsvRow = [result.id, result.receive_timestamp, result.event_path, result.payload];
+      fs.appendFileSync(exportEventsFile, tsvRow.join('\t') + '\n');
+    }
   }
 
   static async exportRawEventRequests(targetStream: Writable): Promise<void> {
-    const pg = await this.connect(true);
+    const pg = await this.connect({
+      usageName: 'export-raw-events',
+      skipMigrations: true,
+      withNotifier: false,
+    });
     try {
       await pg.query(async client => {
         const copyQuery = pgCopyStreams.to(
@@ -889,26 +941,40 @@ export class PgDataStore
     // 2. Use `pg-cursor` to async read rows from temp table (order by `id` ASC)
     // 3. Drop temp table
     // 4. Close db connection
-    const pg = await this.connect(true);
+    const pg = await this.connect({
+      usageName: 'get-raw-events',
+      skipMigrations: true,
+      withNotifier: false,
+    });
     try {
       const client = await pg.pool.connect();
       try {
         await client.query('BEGIN');
-        await client.query(
-          `
+        await client.query(`
           CREATE TEMPORARY TABLE temp_event_observer_requests(
             id bigint PRIMARY KEY,
             receive_timestamp timestamptz NOT NULL,
             event_path text NOT NULL,
             payload jsonb NOT NULL
           ) ON COMMIT DROP
-          `
-        );
+        `);
+        // Use a `temp_raw_tsv` table first to store the raw TSV data as it might come with duplicate
+        // rows which would trigger the `PRIMARY KEY` constraint in `temp_event_observer_requests`.
+        // We will "upsert" from the former to the latter before event ingestion.
+        await client.query(`
+          CREATE TEMPORARY TABLE temp_raw_tsv
+          (LIKE temp_event_observer_requests)
+          ON COMMIT DROP
+        `);
         onStatusUpdate?.('Importing raw event requests into temporary table...');
-        const importStream = client.query(
-          pgCopyStreams.from(`COPY temp_event_observer_requests FROM STDIN`)
-        );
+        const importStream = client.query(pgCopyStreams.from(`COPY temp_raw_tsv FROM STDIN`));
         await pipelineAsync(readStream, importStream);
+        await client.query(`
+          INSERT INTO temp_event_observer_requests
+          SELECT *
+          FROM temp_raw_tsv
+          ON CONFLICT DO NOTHING;
+        `);
         const totalRowCountQuery = await client.query<{ count: string }>(
           `SELECT COUNT(id) count FROM temp_event_observer_requests`
         );
@@ -960,7 +1026,11 @@ export class PgDataStore
   }
 
   static async containsAnyRawEventRequests(): Promise<boolean> {
-    const pg = await this.connect(true);
+    const pg = await this.connect({
+      usageName: 'contains-raw-events-check',
+      skipMigrations: true,
+      withNotifier: false,
+    });
     try {
       return await pg.query(async client => {
         try {
@@ -978,24 +1048,36 @@ export class PgDataStore
     }
   }
 
+  async getConnectionApplicationName(): Promise<string> {
+    const statResult = await this.query(async client => {
+      const result = await client.query<{ application_name: string }>(
+        // Get `application_name` for current connection (each connection has a unique PID)
+        'select application_name from pg_stat_activity WHERE pid = pg_backend_pid()'
+      );
+      return result.rows[0].application_name;
+    });
+    return statResult;
+  }
+
   async getChainTip(
-    client: ClientBase,
-    checkMissingChainTip?: boolean
+    client: ClientBase
   ): Promise<{ blockHeight: number; blockHash: string; indexBlockHash: string }> {
     const currentTipBlock = await client.query<{
       block_height: number;
       block_hash: Buffer;
       index_block_hash: Buffer;
     }>(
-      `
-      SELECT block_height, block_hash, index_block_hash
-      FROM blocks
-      WHERE canonical = true AND block_height = (SELECT MAX(block_height) FROM blocks)
-      `
+      // The `chain_tip` materialized view is not available during event replay.
+      // Since `getChainTip()` is used heavily during event ingestion, we'll fall back to
+      // a classic query.
+      this.eventReplay
+        ? `
+          SELECT block_height, block_hash, index_block_hash
+          FROM blocks
+          WHERE canonical = true AND block_height = (SELECT MAX(block_height) FROM blocks)
+          `
+        : `SELECT block_height, block_hash, index_block_hash FROM chain_tip`
     );
-    if (checkMissingChainTip && currentTipBlock.rowCount === 0) {
-      throw new Error(`No canonical block exists. The node is likely still syncing.`);
-    }
     const height = currentTipBlock.rows[0]?.block_height ?? 0;
     return {
       blockHeight: height,
@@ -1142,15 +1224,16 @@ export class PgDataStore
       }
 
       await this.refreshNftCustody(client, txs, true);
+      await this.refreshMaterializedView(client, 'chain_tip');
 
       if (this.notifier) {
-        dbMicroblocks.forEach(async microblock => {
-          await this.notifier?.sendMicroblock({ microblockHash: microblock.microblock_hash });
-        });
-        txs.forEach(async txData => {
-          await this.notifier?.sendTx({ txId: txData.tx.tx_id });
-        });
-        this.emitAddressTxUpdates(data.txs);
+        for (const microblock of dbMicroblocks) {
+          await this.notifier.sendMicroblock({ microblockHash: microblock.microblock_hash });
+        }
+        for (const tx of txs) {
+          await this.notifier.sendTx({ txId: tx.tx.tx_id });
+        }
+        await this.emitAddressTxUpdates(txs);
       }
     });
   }
@@ -1333,13 +1416,15 @@ export class PgDataStore
           }
         }
         await this.refreshNftCustody(client, batchedTxData);
+        await this.refreshMaterializedView(client, 'chain_tip');
 
         const tokenContractDeployments = data.txs
           .filter(entry => entry.tx.type_id === DbTxTypeId.SmartContract)
           .filter(entry => entry.tx.status === DbTxStatus.Success)
+          .filter(entry => entry.smartContracts[0].abi && entry.smartContracts[0].abi !== 'null')
           .map(entry => {
             const smartContract = entry.smartContracts[0];
-            const contractAbi: ClarityAbi = JSON.parse(smartContract.abi);
+            const contractAbi: ClarityAbi = JSON.parse(smartContract.abi as string);
             const queueEntry: DbTokenMetadataQueueEntry = {
               queueId: -1,
               txId: entry.tx.tx_id,
@@ -1361,13 +1446,13 @@ export class PgDataStore
     // Skip sending `PgNotifier` updates altogether if we're in the genesis block since this block is the
     // event replay of the v1 blockchain.
     if ((data.block.block_height > 1 || !isProdEnv) && this.notifier) {
-      await this.notifier?.sendBlock({ blockHash: data.block.block_hash });
-      data.txs.forEach(async entry => {
-        await this.notifier?.sendTx({ txId: entry.tx.tx_id });
-      });
-      this.emitAddressTxUpdates(data.txs);
+      await this.notifier.sendBlock({ blockHash: data.block.block_hash });
+      for (const tx of data.txs) {
+        await this.notifier.sendTx({ txId: tx.tx.tx_id });
+      }
+      await this.emitAddressTxUpdates(data.txs);
       for (const tokenMetadataQueueEntry of tokenMetadataQueueEntries) {
-        await this.notifier?.sendTokenMetadata({ entry: tokenMetadataQueueEntry });
+        await this.notifier.sendTokenMetadata({ entry: tokenMetadataQueueEntry });
       }
     }
   }
@@ -1470,13 +1555,14 @@ export class PgDataStore
     txs: DataStoreTxEventData[]
   ): Promise<void> {
     for (const mb of microblocks) {
-      await client.query(
+      const mbResult = await client.query(
         `
         INSERT INTO microblocks(
           canonical, microblock_canonical, microblock_hash, microblock_sequence, microblock_parent_hash,
           parent_index_block_hash, block_height, parent_block_height, parent_block_hash, index_block_hash, block_hash,
           parent_burn_block_height, parent_burn_block_hash, parent_burn_block_time
         ) values($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        ON CONFLICT ON CONSTRAINT unique_microblock_hash DO NOTHING
         `,
         [
           mb.canonical,
@@ -1495,6 +1581,13 @@ export class PgDataStore
           mb.parent_burn_block_time,
         ]
       );
+      if (mbResult.rowCount !== 1) {
+        const errMsg = `A duplicate microblock was attempted to be inserted into the microblocks table: ${mb.microblock_hash}`;
+        logger.warn(errMsg);
+        // A duplicate microblock entry really means we received a duplicate `/new_microblocks` node event.
+        // We will ignore this whole microblock data entry in this case.
+        return;
+      }
     }
 
     for (const entry of txs) {
@@ -1613,6 +1706,14 @@ export class PgDataStore
       );
     }
 
+    // Update `principal_stx_txs`
+    await client.query(
+      `UPDATE principal_stx_txs
+      SET canonical = $1, microblock_canonical = $2
+      WHERE tx_id = ANY ($3)`,
+      [args.isCanonical, args.isMicroCanonical, updatedMbTxs.map(tx => hexToBuffer(tx.tx_id))]
+    );
+
     return { updatedTxs: updatedMbTxs };
   }
 
@@ -1722,11 +1823,7 @@ export class PgDataStore
   }): Promise<{ result: { microblock: DbMicroblock; txs: string[] }[]; total: number }> {
     const result = await this.queryTx(async client => {
       const countQuery = await client.query<{ total: number }>(
-        `
-        SELECT COUNT(*)::integer total
-        FROM microblocks
-        WHERE canonical = true AND microblock_canonical = true
-        `
+        `SELECT microblock_count AS total FROM chain_tip`
       );
       const microblockQuery = await client.query<
         MicroblockQueryResult & { tx_id?: Buffer | null; tx_index?: number | null }
@@ -1958,10 +2055,10 @@ export class PgDataStore
     });
   }
 
-  emitAddressTxUpdates(txs: DataStoreTxEventData[]) {
+  async emitAddressTxUpdates(txs: DataStoreTxEventData[]) {
     // Record all addresses that had an associated tx.
     const addressTxUpdates = new Map<string, number>();
-    txs.forEach(entry => {
+    for (const entry of txs) {
       const tx = entry.tx;
       const addAddressTx = (addr: string | undefined) => {
         if (addr) {
@@ -1998,13 +2095,13 @@ export class PgDataStore
           addAddressTx(tx.token_transfer_recipient_address);
           break;
       }
-    });
-    addressTxUpdates.forEach(async (blockHeight, address) => {
+    }
+    for (const [address, blockHeight] of addressTxUpdates) {
       await this.notifier?.sendAddress({
         address: address,
         blockHeight: blockHeight,
       });
-    });
+    }
   }
 
   /**
@@ -2085,6 +2182,13 @@ export class PgDataStore
     for (const txId of txIds) {
       logger.verbose(`Marked tx as ${canonical ? 'canonical' : 'non-canonical'}: ${txId.tx_id}`);
     }
+    // Update `principal_stx_txs`
+    await client.query(
+      `UPDATE principal_stx_txs
+      SET canonical = $1
+      WHERE tx_id = ANY ($2)`,
+      [canonical, txIds.map(tx => hexToBuffer(tx.tx_id))]
+    );
 
     const minerRewardResults = await client.query(
       `
@@ -2521,29 +2625,31 @@ export class PgDataStore
     logger.verbose(`Entities marked as non-canonical: ${markedNonCanonical}`);
   }
 
-  static async connect(
+  static async connect({
     skipMigrations = false,
     withNotifier = true,
-    eventReplay = false
-  ): Promise<PgDataStore> {
-    const clientConfig = getPgClientConfig();
-
+    eventReplay = false,
+    usageName,
+  }: {
+    skipMigrations?: boolean;
+    withNotifier?: boolean;
+    eventReplay?: boolean;
+    usageName: string;
+  }): Promise<PgDataStore> {
     const initTimer = stopwatch();
     let connectionError: Error | undefined;
     let connectionOkay = false;
     let lastElapsedLog = 0;
     do {
+      const clientConfig = getPgClientConfig({ usageName: `${usageName};init-connection-poll` });
       const client = new Client(clientConfig);
       try {
         await client.connect();
         connectionOkay = true;
         break;
       } catch (error: any) {
-        if (
-          error.code !== 'ECONNREFUSED' &&
-          error.message !== 'Connection terminated unexpectedly' &&
-          !error.message?.includes('database system is starting')
-        ) {
+        const pgConnectionError = isPgConnectionError(error);
+        if (!pgConnectionError) {
           logError('Cannot connect to pg', error);
           throw error;
         }
@@ -2564,39 +2670,26 @@ export class PgDataStore
     }
 
     if (!skipMigrations) {
+      const clientConfig = getPgClientConfig({ usageName: `${usageName};schema-migrations` });
       await runMigrations(clientConfig);
     }
-    const poolConfig: PoolConfig = {
-      ...clientConfig,
-    };
-    const pgConnectionPoolMaxEnv = process.env['PG_CONNECTION_POOL_MAX'];
-    if (pgConnectionPoolMaxEnv) {
-      poolConfig.max = Number.parseInt(pgConnectionPoolMaxEnv);
+    let notifier: PgNotifier | undefined = undefined;
+    if (withNotifier) {
+      notifier = new PgNotifier(
+        getPgClientConfig({ usageName: `${usageName}:notifier`, primary: true })
+      );
     }
+    const poolConfig: PoolConfig = getPgClientConfig({
+      usageName: `${usageName};datastore-crud`,
+      getPoolConfig: true,
+    });
     const pool = new Pool(poolConfig);
     pool.on('error', error => {
       logger.error(`Postgres connection pool error: ${error.message}`, error);
     });
-    let poolClient: PoolClient | undefined;
-    try {
-      poolClient = await pool.connect();
-      if (!withNotifier) {
-        return new PgDataStore(pool, undefined, eventReplay);
-      }
-      const primaryClientConfig = getPgClientConfig(true);
-      const notifier = new PgNotifier(primaryClientConfig);
-      const store = new PgDataStore(pool, notifier, eventReplay);
-      await store.connectPgNotifier();
-      return store;
-    } catch (error) {
-      logError(
-        `Error connecting to Postgres using ${JSON.stringify(clientConfig)}: ${error}`,
-        error
-      );
-      throw error;
-    } finally {
-      poolClient?.release();
-    }
+    const store = new PgDataStore(pool, notifier, eventReplay);
+    await store.connectPgNotifier();
+    return store;
   }
 
   async updateMinerReward(client: ClientBase, minerReward: DbMinerReward): Promise<number> {
@@ -2756,21 +2849,8 @@ export class PgDataStore
         microblock_sequence: number | null;
       }>(
         `
-        WITH anchor_block AS (
-          SELECT block_height, block_hash, index_block_hash
-          FROM blocks
-          WHERE canonical = true
-          AND block_height = (SELECT MAX(block_height) FROM blocks)
-        ), microblock AS (
-          SELECT microblock_hash, microblock_sequence
-          FROM microblocks, anchor_block
-          WHERE microblocks.parent_index_block_hash = anchor_block.index_block_hash
-          AND microblock_canonical = true AND canonical = true
-          ORDER BY microblock_sequence DESC
-          LIMIT 1
-        )
         SELECT block_height, index_block_hash, block_hash, microblock_hash, microblock_sequence
-        FROM anchor_block LEFT JOIN microblock ON true
+        FROM chain_tip
         `
       );
       if (result.rowCount === 0) {
@@ -2878,13 +2958,7 @@ export class PgDataStore
   async getCurrentBlockHeight(): Promise<FoundOrNot<number>> {
     return this.query(async client => {
       const result = await client.query<{ block_height: number }>(
-        `
-        SELECT block_height
-        FROM blocks
-        WHERE canonical = true
-        ORDER BY block_height DESC
-        LIMIT 1
-        `
+        `SELECT block_height FROM chain_tip`
       );
       if (result.rowCount === 0) {
         return { found: false } as const;
@@ -2915,9 +2989,7 @@ export class PgDataStore
   async getBlocks({ limit, offset }: { limit: number; offset: number }) {
     return this.queryTx(async client => {
       const total = await client.query<{ count: number }>(`
-        SELECT COUNT(*)::integer
-        FROM blocks
-        WHERE canonical = true
+        SELECT block_count AS count FROM chain_tip
       `);
       const results = await client.query<BlockQueryResult>(
         `
@@ -3054,8 +3126,7 @@ export class PgDataStore
       }>(
         `
         SELECT
-          burn_block_hash, burn_block_height, address, slot_index,
-          (COUNT(*) OVER())::integer AS count
+          burn_block_hash, burn_block_height, address, slot_index, ${countOverColumn()}
         FROM reward_slot_holders
         WHERE canonical = true ${burnchainAddress ? 'AND address = $3' : ''}
         ORDER BY burn_block_height DESC, slot_index DESC
@@ -3283,8 +3354,7 @@ export class PgDataStore
         $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
         $38, $39, $40, $41, $42
       )
-      -- ON CONFLICT ON CONSTRAINT unique_tx_id_index_block_hash
-      -- DO NOTHING
+      ON CONFLICT ON CONSTRAINT unique_tx_id_index_block_hash_microblock_hash DO NOTHING
       `,
       [
         hexToBuffer(tx.tx_id),
@@ -3423,10 +3493,24 @@ export class PgDataStore
       sponsor_address: result.sponsor_address ?? undefined,
       sender_address: result.sender_address,
       origin_hash_mode: result.origin_hash_mode,
-      abi: result.abi,
+      abi: this.parseAbiColumn(result.abi),
     };
     this.parseTxTypeSpecificQueryResult(result, tx);
     return tx;
+  }
+
+  /**
+   * The consumers of db responses expect `abi` fields to be a stringified JSON if
+   * exists, otherwise `undefined`.
+   * The pg query returns a JSON object, `null` (or the string 'null').
+   * @returns Returns the stringify JSON if exists, or undefined if `null` or 'null' string.
+   */
+  parseAbiColumn(abi: unknown | null): string | undefined {
+    if (!abi || abi === 'null') {
+      return undefined;
+    } else {
+      return JSON.stringify(abi);
+    }
   }
 
   parseTxQueryResult(result: ContractTxQueryResult): DbTx {
@@ -3462,7 +3546,7 @@ export class PgDataStore
       execution_cost_runtime: Number.parseInt(result.execution_cost_runtime),
       execution_cost_write_count: Number.parseInt(result.execution_cost_write_count),
       execution_cost_write_length: Number.parseInt(result.execution_cost_write_length),
-      abi: result.abi,
+      abi: this.parseAbiColumn(result.abi),
     };
     this.parseTxTypeSpecificQueryResult(result, tx);
     return tx;
@@ -3647,9 +3731,9 @@ export class PgDataStore
         DbTxStatus.DroppedStaleGarbageCollect,
       ];
       const selectCols = MEMPOOL_TX_COLUMNS.replace('tx_id', 'mempool.tx_id');
-      const resultQuery = await client.query<MempoolTxQueryResult & { count: string }>(
+      const resultQuery = await client.query<MempoolTxQueryResult & { count: number }>(
         `
-        SELECT ${selectCols}, ${abiColumn('mempool')}, COUNT(*) OVER() AS count
+        SELECT ${selectCols}, ${abiColumn('mempool')}, ${countOverColumn()}
         FROM (
           SELECT *
           FROM mempool_txs
@@ -3668,7 +3752,7 @@ export class PgDataStore
         `,
         [droppedStatuses, limit, offset]
       );
-      const count = resultQuery.rows.length > 0 ? parseInt(resultQuery.rows[0].count) : 0;
+      const count = resultQuery.rows.length > 0 ? resultQuery.rows[0].count : 0;
       const mempoolTxs = resultQuery.rows.map(r => this.parseMempoolTxQueryResult(r));
       return { results: mempoolTxs, total: count };
     });
@@ -3829,11 +3913,9 @@ export class PgDataStore
       if (txTypeFilter.length === 0) {
         totalQuery = await client.query<{ count: number }>(
           `
-          SELECT COUNT(*)::integer
-          FROM txs
-          WHERE canonical = true AND microblock_canonical = true AND block_height <= $1
-          `,
-          [maxHeight]
+          SELECT ${includeUnanchored ? 'tx_count_unanchored' : 'tx_count'} AS count
+          FROM chain_tip
+          `
         );
         resultQuery = await client.query<ContractTxQueryResult>(
           `
@@ -4345,36 +4427,49 @@ export class PgDataStore
   /**
    * Update the `principal_stx_tx` table with the latest `tx_id`s that resulted in a STX
    * transfer relevant to a principal (stx address or contract id).
-   * Only canonical transactions will be kept.
    * @param client - DB client
    * @param tx - Transaction
    * @param events - Transaction STX events
    */
   async updatePrincipalStxTxs(client: ClientBase, tx: DbTx, events: DbStxEvent[]) {
-    if (!tx.canonical || !tx.microblock_canonical) {
-      return;
-    }
+    const txIdBuffer = hexToBuffer(tx.tx_id);
     const insertPrincipalStxTxs = async (principals: string[]) => {
       principals = [...new Set(principals)]; // Remove duplicates
-      const columnCount = 3;
+      const columnCount = 7;
       const insertParams = this.generateParameterizedInsertString({
         rowCount: principals.length,
         columnCount,
       });
       const values: any[] = [];
       for (const principal of principals) {
-        values.push(principal, hexToBuffer(tx.tx_id), tx.block_height);
+        values.push(
+          principal,
+          txIdBuffer,
+          tx.block_height,
+          tx.microblock_sequence,
+          tx.tx_index,
+          tx.canonical,
+          tx.microblock_canonical
+        );
       }
       // If there was already an existing (`tx_id`, `principal`) pair in the table, we will update
-      // the entry's `block_height` to reflect the newer block.
+      // the entry's data to reflect the newer transaction state.
       const insertQuery = `
-        INSERT INTO principal_stx_txs (principal, tx_id, block_height)
+        INSERT INTO principal_stx_txs
+          (principal, tx_id, block_height, microblock_sequence, tx_index, canonical, microblock_canonical)
         VALUES ${insertParams}
-        ON CONFLICT
-          ON CONSTRAINT unique_principal_tx_id
+        ON CONFLICT ON CONSTRAINT unique_principal_tx_id
           DO UPDATE
-            SET block_height = EXCLUDED.block_height
+            SET block_height = EXCLUDED.block_height,
+              microblock_sequence = EXCLUDED.microblock_sequence,
+              tx_index = EXCLUDED.tx_index,
+              canonical = EXCLUDED.canonical,
+              microblock_canonical = EXCLUDED.microblock_canonical
             WHERE EXCLUDED.block_height > principal_stx_txs.block_height
+              OR EXCLUDED.microblock_sequence > principal_stx_txs.microblock_sequence
+              OR EXCLUDED.tx_index > principal_stx_txs.tx_index
+              OR EXCLUDED.canonical != principal_stx_txs.canonical
+              OR EXCLUDED.microblock_canonical != principal_stx_txs.microblock_canonical
         `;
       const insertQueryName = `insert-batch-principal_stx_txs_${columnCount}x${principals.length}`;
       const insertQueryConfig: QueryConfig = {
@@ -4398,9 +4493,6 @@ export class PgDataStore
     for (const eventBatch of batchIterate(events, batchSize)) {
       const principals: string[] = [];
       for (const event of eventBatch) {
-        if (!event.canonical) {
-          continue;
-        }
         if (event.sender) principals.push(event.sender);
         if (event.recipient) principals.push(event.recipient);
       }
@@ -4799,7 +4891,7 @@ export class PgDataStore
         tx_id: Buffer;
         block_height: number;
         source_code: string;
-        abi: string;
+        abi: unknown | null;
       }>(
         `
         SELECT DISTINCT ON (contract_id) contract_id, canonical, tx_id, block_height, source_code, abi
@@ -4824,7 +4916,7 @@ export class PgDataStore
         contract_id: string;
         block_height: number;
         source_code: string;
-        abi: string;
+        abi: unknown | null;
       }>(
         `
         SELECT tx_id, canonical, contract_id, block_height, source_code, abi
@@ -4849,7 +4941,7 @@ export class PgDataStore
     contract_id: string;
     block_height: number;
     source_code: string;
-    abi: string;
+    abi: unknown | null;
   }) {
     const smartContract: DbSmartContract = {
       tx_id: bufferToHexPrefixString(row.tx_id),
@@ -4857,7 +4949,9 @@ export class PgDataStore
       contract_id: row.contract_id,
       block_height: row.block_height,
       source_code: row.source_code,
-      abi: row.abi,
+      // The consumers of this object expect the value to be stringify
+      // JSON if exists, otherwise null rather than undefined.
+      abi: this.parseAbiColumn(row.abi) ?? null,
     };
     return { found: true, result: smartContract };
   }
@@ -4964,6 +5058,7 @@ export class PgDataStore
     }
     await client.query(`REFRESH MATERIALIZED VIEW ${viewName}`);
   }
+
   async getSmartContractByTrait(args: {
     trait: ClarityAbi;
     limit: number;
@@ -4989,7 +5084,7 @@ export class PgDataStore
         contract_id: string;
         block_height: number;
         source_code: string;
-        abi: string;
+        abi: unknown | null;
       }>(
         `
         SELECT tx_id, canonical, contract_id, block_height, source_code, abi
@@ -5004,15 +5099,7 @@ export class PgDataStore
         return { found: false } as const;
       }
       const smartContracts = result.rows.map(row => {
-        const smartContract: DbSmartContract = {
-          tx_id: bufferToHexPrefixString(row.tx_id),
-          canonical: row.canonical,
-          contract_id: row.contract_id,
-          block_height: row.block_height,
-          source_code: row.source_code,
-          abi: row.abi,
-        };
-        return smartContract;
+        return this.parseQueryResultToSmartContract(row).result;
       });
       return { found: true, result: smartContracts };
     });
@@ -5236,10 +5323,8 @@ export class PgDataStore
         } & { count: number }
       >(
         `
-        SELECT *,
-        (
-          COUNT(*) OVER()
-        )::INTEGER AS COUNT  FROM(
+        SELECT *, ${countOverColumn()}
+        FROM(
           SELECT
             'stx_lock' as asset_type, event_index, tx_id, microblock_sequence, tx_index, block_height, canonical, 0 as asset_event_type_id,
             locked_address as sender, '' as recipient, '<stx>' as asset_identifier, locked_amount as amount, unlock_height, null::bytea as value
@@ -5447,30 +5532,23 @@ export class PgDataStore
     offset: number;
   }): Promise<{ results: DbTx[]; total: number }> {
     return this.queryTx(async client => {
-      const principal = isValidPrincipal(args.stxAddress);
-      if (!principal) {
-        return { results: [], total: 0 };
-      }
       const blockCond = args.atSingleBlock ? 'block_height = $4' : 'block_height <= $4';
       const resultQuery = await client.query<ContractTxQueryResult & { count: number }>(
         // Query the `principal_stx_txs` table first to get the results page we want and then
         // join against `txs` to get the full transaction objects only for that page.
         `
-        WITH
-        -- getAddressTxs
-        stx_txs AS (
-          SELECT tx_id, ${COUNT_COLUMN}
-          FROM principal_stx_txs AS s
-          WHERE principal = $1 AND ${blockCond}
-          ORDER BY block_height DESC
+        WITH stx_txs AS (
+          SELECT tx_id, ${countOverColumn()}
+          FROM principal_stx_txs
+          WHERE principal = $1 AND ${blockCond} AND canonical = TRUE AND microblock_canonical = TRUE
+          ORDER BY block_height DESC, microblock_sequence DESC, tx_index DESC
           LIMIT $2
           OFFSET $3
         )
-        SELECT ${TX_COLUMNS}, ${abiColumn()}, count
+        SELECT ${txColumns()}, ${abiColumn()}, count
         FROM stx_txs
         INNER JOIN txs USING (tx_id)
         WHERE canonical = TRUE AND microblock_canonical = TRUE
-        ORDER BY block_height DESC, microblock_sequence DESC, tx_index DESC
         `,
         [args.stxAddress, args.limit, args.offset, args.blockHeight]
       );
@@ -5518,7 +5596,7 @@ export class PgDataStore
           INNER JOIN event_txs ON txs.tx_id = event_txs.tx_id
           WHERE txs.canonical = true AND txs.microblock_canonical = true AND txs.tx_id = $2
         )
-        SELECT ${TX_COLUMNS}, (COUNT(*) OVER())::integer as count
+        SELECT ${TX_COLUMNS}, ${countOverColumn()}
         FROM principal_txs
         ORDER BY block_height DESC, tx_index DESC
       ), events AS (
@@ -5599,7 +5677,7 @@ export class PgDataStore
             INNER JOIN event_txs ON txs.tx_id = event_txs.tx_id
             WHERE canonical = true AND microblock_canonical = true
           )
-          SELECT ${TX_COLUMNS}, (COUNT(*) OVER())::integer as count
+          SELECT ${TX_COLUMNS}, ${countOverColumn()}
           FROM principal_txs
           ${args.atSingleBlock ? 'WHERE block_height = $2' : 'WHERE block_height <= $4'}
           ORDER BY block_height DESC, microblock_sequence DESC, tx_index DESC
@@ -5770,10 +5848,7 @@ export class PgDataStore
       const resultQuery = await client.query<TransferQueryResult & { count: number }>(
         `
         SELECT
-            *,
-          (
-            COUNT(*) OVER()
-          )::INTEGER AS COUNT
+          *, ${countOverColumn()}
         FROM
           (
             SELECT
@@ -6117,7 +6192,7 @@ export class PgDataStore
       >(
         `
         WITH nft AS (
-          SELECT *, (COUNT(*) OVER())::integer AS count
+          SELECT *, ${countOverColumn()}
           FROM ${nftCustody} AS nft
           WHERE nft.recipient = $1
           ${assetIdFilter}
@@ -6172,14 +6247,18 @@ export class PgDataStore
         DbNftEvent & ContractTxQueryResult & { count: number }
       >(
         `
-        SELECT ${columns}, ${COUNT_COLUMN}
+        SELECT ${columns}, ${countOverColumn()}
         FROM nft_events AS nft
         INNER JOIN txs USING (tx_id)
         WHERE asset_identifier = $1 AND nft.value = $2
           AND txs.canonical = TRUE AND txs.microblock_canonical = TRUE
           AND nft.canonical = TRUE AND nft.microblock_canonical = TRUE
           AND nft.block_height <= $3
-        ORDER BY nft.block_height DESC, txs.microblock_sequence DESC, txs.tx_index DESC
+        ORDER BY
+          nft.block_height DESC,
+          txs.microblock_sequence DESC,
+          txs.tx_index DESC,
+          nft.event_index DESC
         LIMIT $4
         OFFSET $5
         `,
@@ -6229,7 +6308,7 @@ export class PgDataStore
         DbNftEvent & ContractTxQueryResult & { count: number }
       >(
         `
-        SELECT ${columns}, ${COUNT_COLUMN}
+        SELECT ${columns}, ${countOverColumn()}
         FROM nft_events AS nft
         INNER JOIN txs USING (tx_id)
         WHERE nft.asset_identifier = $1
@@ -6237,7 +6316,11 @@ export class PgDataStore
           AND nft.canonical = TRUE AND nft.microblock_canonical = TRUE
           AND txs.canonical = TRUE AND txs.microblock_canonical = TRUE
           AND nft.block_height <= $2
-        ORDER BY nft.block_height DESC, txs.microblock_sequence DESC, txs.tx_index DESC
+        ORDER BY
+          nft.block_height DESC,
+          txs.microblock_sequence DESC,
+          txs.tx_index DESC,
+          nft.event_index DESC
         LIMIT $3
         OFFSET $4
         `,
@@ -6273,7 +6356,7 @@ export class PgDataStore
     includeUnanchored: boolean;
   }): Promise<{ results: AddressNftEventIdentifier[]; total: number }> {
     return this.queryTx(async client => {
-      const result = await client.query<AddressNftEventIdentifier & { count: string }>(
+      const result = await client.query<AddressNftEventIdentifier & { count: number }>(
         // Join against `nft_custody` materialized view only if we're looking for canonical results.
         `
         WITH address_transfers AS (
@@ -6289,7 +6372,7 @@ export class PgDataStore
           AND block_height <= $4
           ORDER BY asset_identifier, value, block_height DESC, microblock_sequence DESC, tx_index DESC, event_index DESC
         )
-        SELECT sender, recipient, asset_identifier, value, address_transfers.block_height, address_transfers.tx_id, COUNT(*) OVER() AS count
+        SELECT sender, recipient, asset_identifier, value, address_transfers.block_height, address_transfers.tx_id, ${countOverColumn()}
         FROM address_transfers
         INNER JOIN ${args.includeUnanchored ? 'last_nft_transfers' : 'nft_custody'}
           USING (asset_identifier, value, recipient)
@@ -6299,7 +6382,7 @@ export class PgDataStore
         [args.stxAddress, args.limit, args.offset, args.blockHeight]
       );
 
-      const count = result.rows.length > 0 ? parseInt(result.rows[0].count) : 0;
+      const count = result.rows.length > 0 ? result.rows[0].count : 0;
 
       const nftEvents = result.rows.map(row => ({
         sender: row.sender,
@@ -7300,6 +7383,8 @@ export class PgDataStore
     }
     await this.queryTx(async client => {
       await this.refreshMaterializedView(client, 'nft_custody', false);
+      await this.refreshMaterializedView(client, 'nft_custody_unanchored', false);
+      await this.refreshMaterializedView(client, 'chain_tip', false);
     });
   }
 

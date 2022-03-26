@@ -22,6 +22,7 @@ import {
   pubKeyfromPrivKey,
   publicKeyToAddress,
   AddressVersion,
+  bufferCV,
 } from '@stacks/transactions';
 import * as BN from 'bn.js';
 import { createClarityValueArray, readTransaction } from '../p2p/tx';
@@ -69,7 +70,7 @@ describe('api tests', () => {
   beforeEach(async () => {
     process.env.PG_DATABASE = 'postgres';
     await cycleMigrations();
-    db = await PgDataStore.connect();
+    db = await PgDataStore.connect({ usageName: 'tests' });
     client = await db.pool.connect();
     api = await startApiServer({ datastore: db, chainId: ChainID.Testnet, httpLogLevel: 'silly' });
   });
@@ -171,10 +172,24 @@ describe('api tests', () => {
       ...stxMintEvent1,
       amount: 5_000_000_000_000n,
     };
-    await db.updateBlock(client, dbBlock1);
-    await db.updateTx(client, tx);
-    await db.updateStxEvent(client, tx, stxMintEvent1);
-    await db.updateStxEvent(client, tx, stxMintEvent2);
+    await db.update({
+      block: dbBlock1,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [stxMintEvent1, stxMintEvent2],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
 
     const expectedTotalStx1 = stxMintEvent1.amount + stxMintEvent2.amount;
     const result1 = await supertest(api.server).get(`/extended/v1/stx_supply`);
@@ -771,7 +786,6 @@ describe('api tests', () => {
       contract_call_contract_id: 'SP3YK7KWMYRCDMV5M4792T0T7DERQXHJJGGEPV1N8.pg-mdomains-v1',
       contract_call_function_name: 'bns-name-preorder',
     };
-
     const contractCall: DbSmartContract = {
       tx_id: '0x668142abbcabb846e3f83183325325071a8b4882dcf5476a38148cb5b738fc83',
       canonical: true,
@@ -799,9 +813,6 @@ describe('api tests', () => {
       execution_cost_write_count: 138,
       execution_cost_write_length: 91116,
     };
-    await db.updateBlock(client, dbBlock);
-    await db.updateTx(client, tx1);
-    await db.updateSmartContract(client, tx1, contractCall);
     const dbTx2: DbTx = {
       tx_id: '0x8915000000000000000000000000000000000000000000000000000000000000',
       anchor_mode: 3,
@@ -836,7 +847,35 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateTx(client, dbTx2);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx1,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [contractCall],
+        },
+        {
+          tx: dbTx2,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
     const notFoundTxId = '0x8914000000000000000000000000000000000000000000000000000000000000';
     const txsListDetail = await supertest(api.server).get(
       `/extended/v1/tx/multiple?tx_id=${mempoolTx.tx_id}&tx_id=${tx1.tx_id}&tx_id=${notFoundTxId}&tx_id=${dbTx2.tx_id}`
@@ -852,6 +891,8 @@ describe('api tests', () => {
   });
 
   test('fetch mempool-tx', async () => {
+    const block = new TestBlockBuilder().addTx().build();
+    await db.update(block);
     const mempoolTx: DbMempoolTx = {
       pruned: false,
       tx_id: '0x8912000000000000000000000000000000000000000000000000000000000000',
@@ -894,26 +935,8 @@ describe('api tests', () => {
   });
 
   test('fetch mempool-tx - sponsored', async () => {
-    const dbBlock: DbBlock = {
-      block_hash: '0xff',
-      index_block_hash: '0x1234',
-      parent_index_block_hash: '0x5678',
-      parent_block_hash: '0x5678',
-      parent_microblock_hash: '',
-      parent_microblock_sequence: 0,
-      block_height: 1,
-      burn_block_time: 1594647995,
-      burn_block_hash: '0x1234',
-      burn_block_height: 123,
-      miner_txid: '0x4321',
-      canonical: true,
-      execution_cost_read_count: 0,
-      execution_cost_read_length: 0,
-      execution_cost_runtime: 0,
-      execution_cost_write_count: 0,
-      execution_cost_write_length: 0,
-    };
-    await db.updateBlock(client, dbBlock);
+    const block = new TestBlockBuilder().addTx().build();
+    await db.update(block);
     const mempoolTx: DbMempoolTx = {
       pruned: false,
       tx_id: '0x8912000000000000000000000000000000000000000000000000000000000000',
@@ -957,6 +980,8 @@ describe('api tests', () => {
   });
 
   test('fetch mempool-tx - dropped', async () => {
+    const block = new TestBlockBuilder({ index_block_hash: '0x5678' }).addTx().build();
+    await db.update(block);
     const mempoolTx1: DbMempoolTx = {
       pruned: false,
       tx_id: '0x8912000000000000000000000000000000000000000000000000000000000000',
@@ -993,11 +1018,6 @@ describe('api tests', () => {
       ...mempoolTx1,
       tx_id: '0x8912000000000000000000000000000000000000000000000000000000000005',
       receipt_time: 1594307705,
-    };
-    const mempoolTx6: DbMempoolTx = {
-      ...mempoolTx1,
-      tx_id: '0x8912000000000000000000000000000000000000000000000000000000000006',
-      receipt_time: 1594307706,
     };
 
     await db.updateMempoolTxs({
@@ -1161,11 +1181,11 @@ describe('api tests', () => {
     const dbBlock1: DbBlock = {
       block_hash: '0x0123',
       index_block_hash: '0x1234',
-      parent_index_block_hash: '0x00',
+      parent_index_block_hash: '0x5678',
       parent_block_hash: '0x5678',
       parent_microblock_hash: '',
       parent_microblock_sequence: 0,
-      block_height: 1,
+      block_height: 2,
       burn_block_time: 39486,
       burn_block_hash: '0x1234',
       burn_block_height: 123,
@@ -1247,6 +1267,8 @@ describe('api tests', () => {
   });
 
   test('fetch mempool-tx list', async () => {
+    const block = new TestBlockBuilder().addTx().build();
+    await db.update(block);
     for (let i = 0; i < 10; i++) {
       const mempoolTx: DbMempoolTx = {
         pruned: false,
@@ -1332,6 +1354,9 @@ describe('api tests', () => {
     const recvAddr = 'SP10EZK56MB87JYF5A704K7N18YAT6G6M09HY22GC';
     const contractAddr = 'SP466FNC0P7JWTNM2R9T199QRZN1MYEDTAR0KP27';
     const contractCallId = 'SP32AEEF6WW5Y0NMJ1S8SBSZDAY8R5J32NBZFPKKZ.free-punks-v0';
+
+    const block = new TestBlockBuilder().addTx().build();
+    await db.update(block);
     const stxTransfers: {
       sender: string;
       receiver: string;
@@ -1993,48 +2018,154 @@ describe('api tests', () => {
     expect(JSON.parse(searchResult7.text)).toEqual(expectedResp7);
   });
 
-  test('latest_contract_txs view only considers canonical transactions', async () => {
+  test('/transactions endpoint handles re-orgs correctly', async () => {
     const contractId = 'SP3D6PV2ACBPEKYJTCMH7HEN02KP87QSP8KTEH335.megapont-ape-club-nft';
 
     // Base block
-    const block1 = new TestBlockBuilder({ block_height: 1, block_hash: '0x01' })
+    const block1 = new TestBlockBuilder({
+      block_height: 1,
+      block_hash: '0x01',
+      index_block_hash: '0x01',
+    })
       .addTx()
       .addTxSmartContract({ contract_id: contractId })
       .addTxContractLogEvent({ contract_identifier: contractId })
       .build();
-    block1.block.index_block_hash = '0x01';
     await db.update(block1);
 
     // Canonical block with non-canonical tx
-    const block2 = new TestBlockBuilder({ block_height: 2, block_hash: '0x02' })
-      .addTx({ tx_id: '0x123123' })
+    const block2 = new TestBlockBuilder({
+      block_height: 2,
+      block_hash: '0x02',
+      index_block_hash: '0x02',
+      parent_block_hash: '0x01',
+      parent_index_block_hash: '0x01',
+    })
+      .addTx({
+        tx_id: '0x123123',
+        smart_contract_contract_id: contractId,
+        canonical: false, // <--
+      })
       .build();
-    block2.block.index_block_hash = '0x02';
-    block2.block.parent_block_hash = '0x01';
-    block2.block.parent_index_block_hash = '0x01';
-    block2.txs[0].tx.index_block_hash = '0x02';
-    block2.txs[0].tx.smart_contract_contract_id = contractId;
-    block2.txs[0].tx.canonical = false; // <--
     await db.update(block2);
 
     // Canonical block with canonical tx
-    const block3 = new TestBlockBuilder({ block_height: 3, block_hash: '0x03' })
-      .addTx({ tx_id: '0x123123' }) // Same tx_id
+    const block3 = new TestBlockBuilder({
+      block_height: 3,
+      block_hash: '0x03',
+      index_block_hash: '0x03',
+      parent_block_hash: '0x02',
+      parent_index_block_hash: '0x02',
+    })
+      .addTx({
+        tx_id: '0x123123', // Same tx_id
+        smart_contract_contract_id: contractId,
+      })
       .build();
-    block3.block.index_block_hash = '0x03';
-    block3.block.parent_block_hash = '0x02';
-    block3.block.parent_index_block_hash = '0x02';
-    block3.txs[0].tx.index_block_hash = '0x03';
-    block3.txs[0].tx.smart_contract_contract_id = contractId;
     await db.update(block3);
 
-    const transactionsResult = await supertest(api.server).get(
+    // Transaction is reported with correct block_height
+    const result1 = await supertest(api.server).get(
       `/extended/v1/address/${contractId}/transactions`
     );
-    expect(transactionsResult.status).toBe(200);
-    expect(transactionsResult.type).toBe('application/json');
-    expect(JSON.parse(transactionsResult.text).total).toEqual(1);
-    expect(JSON.parse(transactionsResult.text).results[0].tx_id).toEqual('0x123123');
+    expect(result1.status).toBe(200);
+    expect(result1.type).toBe('application/json');
+    const json1 = JSON.parse(result1.text);
+    expect(json1.total).toEqual(1);
+    expect(json1.results.length).toEqual(1);
+    expect(json1.results[0].tx_id).toEqual('0x123123');
+    expect(json1.results[0].block_height).toEqual(3);
+
+    // Non-canonical block with tx
+    const block4 = new TestBlockBuilder({
+      block_height: 4,
+      block_hash: '0x04',
+      index_block_hash: '0x04',
+      parent_block_hash: '0x03',
+      parent_index_block_hash: '0x03',
+      canonical: false,
+    })
+      .addTx({ tx_id: '0x11a1', smart_contract_contract_id: contractId, canonical: false })
+      .build();
+    await db.update(block4);
+
+    // Transaction not reported in results
+    const result2 = await supertest(api.server).get(
+      `/extended/v1/address/${contractId}/transactions`
+    );
+    expect(result2.status).toBe(200);
+    expect(result2.type).toBe('application/json');
+    expect(JSON.parse(result2.text).total).toEqual(1);
+
+    // New canonical block restores previous non-canonical block
+    const block5 = new TestBlockBuilder({
+      block_height: 5,
+      block_hash: '0x05',
+      index_block_hash: '0x05',
+      parent_block_hash: '0x04',
+      parent_index_block_hash: '0x04',
+    })
+      .addTx({ tx_id: '0x1112' })
+      .build();
+    await db.update(block5);
+
+    // Transaction is now reported in results
+    const result3 = await supertest(api.server).get(
+      `/extended/v1/address/${contractId}/transactions`
+    );
+    expect(result3.status).toBe(200);
+    expect(result3.type).toBe('application/json');
+    const json3 = JSON.parse(result3.text);
+    expect(json3.total).toEqual(2);
+    expect(json3.results[0].tx_id).toEqual('0x11a1');
+
+    // Microblock with non-canonical tx
+    const microblock1 = new TestMicroblockStreamBuilder()
+      .addMicroblock({
+        microblock_hash: '0xbb01',
+        parent_index_block_hash: '0x05',
+        microblock_sequence: 0,
+      })
+      .addTx({
+        tx_id: '0x11a2',
+        smart_contract_contract_id: contractId,
+        microblock_canonical: false,
+        index_block_hash: '0x06',
+      })
+      .build();
+    await db.updateMicroblocks(microblock1);
+
+    // Transaction not reported in results
+    const result4 = await supertest(api.server).get(
+      `/extended/v1/address/${contractId}/transactions?unanchored=true`
+    );
+    expect(result4.status).toBe(200);
+    expect(result4.type).toBe('application/json');
+    expect(JSON.parse(result4.text).total).toEqual(2);
+
+    // Confirm with anchor block
+    const block6 = new TestBlockBuilder({
+      block_height: 6,
+      block_hash: '0x06',
+      index_block_hash: '0x06',
+      parent_block_hash: '0x05',
+      parent_index_block_hash: '0x05',
+      parent_microblock_hash: '0xbb01', // Point to latest microblock
+      parent_microblock_sequence: 0,
+    })
+      .addTx()
+      .build();
+    await db.update(block6);
+
+    // Transaction is now reported in results
+    const result5 = await supertest(api.server).get(
+      `/extended/v1/address/${contractId}/transactions?unanchored=true`
+    );
+    expect(result5.status).toBe(200);
+    expect(result5.type).toBe('application/json');
+    const json5 = JSON.parse(result5.text);
+    expect(json5.total).toEqual(3);
+    expect(json5.results[0].tx_id).toEqual('0x11a2');
   });
 
   test('search term - hash with metadata', async () => {
@@ -3425,7 +3556,7 @@ describe('api tests', () => {
       parent_block_hash: '0x5678',
       parent_microblock_hash: '',
       parent_microblock_sequence: 0,
-      block_height: 100123123,
+      block_height: 1,
       burn_block_time: 39486,
       burn_block_hash: '0x1234',
       burn_block_height: 100123123,
@@ -3437,8 +3568,6 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, block);
-
     let indexIdIndex = 0;
     const createStxTx = (
       sender: string,
@@ -3455,9 +3584,9 @@ describe('api tests', () => {
         anchor_mode: 3,
         nonce: 0,
         raw_tx: Buffer.alloc(0),
-        index_block_hash: '0x5432',
-        block_hash: '0x9876',
-        block_height: 68456,
+        index_block_hash: block.index_block_hash,
+        block_hash: block.block_hash,
+        block_height: block.block_height,
         burn_block_time: 1594647994,
         parent_burn_block_time: 1626122935,
         type_id: DbTxTypeId.TokenTransfer,
@@ -3537,7 +3666,6 @@ describe('api tests', () => {
       }
       return [tx, stxEvents, ftEvents, nftEvents];
     };
-
     const txs = [
       createStxTx(testAddr1, testAddr2, 100_000, true, 1, 1, 1),
       createStxTx(testAddr2, testContractAddr, 100, true, 1, 2, 1),
@@ -3546,18 +3674,22 @@ describe('api tests', () => {
       createStxTx(testContractAddr, testAddr4, 15, true, 1, 1, 0),
       createStxTx(testAddr2, testAddr4, 35, true, 3, 1, 2),
     ];
-    for (const [tx, stxEvents, ftEvents, nftEvents] of txs) {
-      await db.updateTx(client, tx);
-      for (const event of stxEvents) {
-        await db.updateStxEvent(client, tx, event);
-      }
-      for (const event of ftEvents) {
-        await db.updateFtEvent(client, tx, event);
-      }
-      for (const event of nftEvents) {
-        await db.updateNftEvent(client, tx, event);
-      }
-    }
+    await db.update({
+      block: block,
+      microblocks: [],
+      minerRewards: [],
+      txs: txs.map(data => ({
+        tx: data[0],
+        stxEvents: data[1],
+        ftEvents: data[2],
+        nftEvents: data[3],
+        stxLockEvents: [],
+        contractLogEvents: [],
+        names: [],
+        namespaces: [],
+        smartContracts: [],
+      })),
+    });
 
     const fetch1 = await supertest(api.server).get(
       `/extended/v1/address/${testAddr2}/transactions_with_transfers?limit=3&offset=0`
@@ -3582,8 +3714,8 @@ describe('api tests', () => {
             post_condition_mode: 'allow',
             post_conditions: [],
             tx_status: 'success',
-            block_hash: '0x9876',
-            block_height: 68456,
+            block_hash: '0x1234',
+            block_height: 1,
             burn_block_time: 1594647994,
             burn_block_time_iso: '2020-07-13T13:46:34.000Z',
             canonical: true,
@@ -3669,8 +3801,8 @@ describe('api tests', () => {
             post_condition_mode: 'allow',
             post_conditions: [],
             tx_status: 'success',
-            block_hash: '0x9876',
-            block_height: 68456,
+            block_hash: '0x1234',
+            block_height: 1,
             burn_block_time: 1594647994,
             burn_block_time_iso: '2020-07-13T13:46:34.000Z',
             canonical: true,
@@ -3730,8 +3862,8 @@ describe('api tests', () => {
             post_condition_mode: 'allow',
             post_conditions: [],
             tx_status: 'success',
-            block_hash: '0x9876',
-            block_height: 68456,
+            block_hash: '0x1234',
+            block_height: 1,
             burn_block_time: 1594647994,
             burn_block_time_iso: '2020-07-13T13:46:34.000Z',
             canonical: true,
@@ -3814,8 +3946,8 @@ describe('api tests', () => {
         post_condition_mode: 'allow',
         post_conditions: [],
         tx_status: 'success',
-        block_hash: '0x9876',
-        block_height: 68456,
+        block_hash: '0x1234',
+        block_height: 1,
         burn_block_time: 1594647994,
         burn_block_time_iso: '2020-07-13T13:46:34.000Z',
         canonical: true,
@@ -3886,8 +4018,8 @@ describe('api tests', () => {
             post_condition_mode: 'allow',
             post_conditions: [],
             tx_status: 'success',
-            block_hash: '0x9876',
-            block_height: 68456,
+            block_hash: '0x1234',
+            block_height: 1,
             burn_block_time: 1594647994,
             burn_block_time_iso: '2020-07-13T13:46:34.000Z',
             canonical: true,
@@ -3973,8 +4105,8 @@ describe('api tests', () => {
             post_condition_mode: 'allow',
             post_conditions: [],
             tx_status: 'success',
-            block_hash: '0x9876',
-            block_height: 68456,
+            block_hash: '0x1234',
+            block_height: 1,
             burn_block_time: 1594647994,
             burn_block_time_iso: '2020-07-13T13:46:34.000Z',
             canonical: true,
@@ -5313,7 +5445,14 @@ describe('api tests', () => {
     const blockTxsRows = await api.datastore.getBlockTxsRows(block.block_hash);
     expect(blockTxsRows.found).toBe(true);
     const blockTxsRowsResult = blockTxsRows.result as DbTx[];
-    expect(blockTxsRowsResult).toContainEqual({ ...contractCall, ...{ abi: contractJsonAbi } });
+    const contractCallResult1 = blockTxsRowsResult.find(tx => tx.tx_id === contractCall.tx_id);
+    expect({
+      ...contractCallResult1,
+      abi: JSON.parse(contractCallResult1?.abi ?? ''),
+    }).toEqual({
+      ...contractCall,
+      ...{ abi: contractJsonAbi },
+    });
 
     const searchResult8 = await supertest(api.server).get(
       `/extended/v1/search/0x1232000000000000000000000000000000000000000000000000000000000000?include_metadata`
@@ -5324,7 +5463,13 @@ describe('api tests', () => {
 
     const blockTxResult = await db.getTxsFromBlock({ hash: '0x1234' }, 20, 0);
     assert(blockTxResult.found);
-    expect(blockTxResult.result.results).toContainEqual({
+    const contractCallResult2 = blockTxResult.result.results.find(
+      tx => tx.tx_id === contractCall.tx_id
+    );
+    expect({
+      ...contractCallResult2,
+      abi: JSON.parse(contractCallResult2?.abi ?? ''),
+    }).toEqual({
       ...contractCall,
       ...{ abi: contractJsonAbi },
     });
@@ -6981,6 +7126,8 @@ describe('api tests', () => {
   });
 
   test('getTxList() returns object', async () => {
+    const block = new TestBlockBuilder().build();
+    await db.update(block);
     const expectedResp = {
       limit: 96,
       offset: 0,
@@ -7271,7 +7418,6 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const txBuilder = await makeContractCall({
       contractAddress: 'ST11NJTTKGVT6D1HY4NJRVQWMQM7TVAR091EJ8P2Y',
       contractName: 'hello-world',
@@ -7326,7 +7472,6 @@ describe('api tests', () => {
       parent_burn_block_hash: '0xaa',
       parent_burn_block_time: 1626122935,
     });
-    await db.updateTx(client, dbTx);
     const contractAbi: ClarityAbi = {
       functions: [
         {
@@ -7341,14 +7486,33 @@ describe('api tests', () => {
       fungible_tokens: [],
       non_fungible_tokens: [],
     };
-    await db.updateSmartContract(client, dbTx, {
+    const smartContract: DbSmartContract = {
       tx_id: dbTx.tx_id,
       canonical: true,
       contract_id: 'ST11NJTTKGVT6D1HY4NJRVQWMQM7TVAR091EJ8P2Y.hello-world',
       block_height: dbBlock.block_height,
       source_code: '()',
       abi: JSON.stringify(contractAbi),
+    };
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: dbTx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [smartContract],
+        },
+      ],
     });
+
     const txQuery = await getTxFromDataStore(db, { txId: dbTx.tx_id, includeUnanchored: false });
     expect(txQuery.found).toBe(true);
     if (!txQuery.found) {
@@ -7421,7 +7585,7 @@ describe('api tests', () => {
       parent_block_hash: '0x5678nb',
       parent_microblock_hash: '',
       parent_microblock_sequence: 0,
-      block_height: 2,
+      block_height: 1,
       burn_block_time: 1594647997,
       burn_block_hash: '0x1234nb',
       burn_block_height: 124,
@@ -7433,7 +7597,12 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [],
+    });
 
     const expectedSponsoredRespBefore = {
       balance: '0',
@@ -7617,7 +7786,6 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
 
     const pc1 = createNonFungiblePostCondition(
       'ST1HB1T8WRNBYB0Y3T7WXZS38NKKPTBR3EG9EPJKR',
@@ -7687,7 +7855,6 @@ describe('api tests', () => {
       parent_burn_block_hash: '0xaa',
       parent_burn_block_time: 1626122935,
     });
-    await db.updateTx(client, dbTx);
     const contractAbi: ClarityAbi = {
       functions: [
         {
@@ -7702,13 +7869,31 @@ describe('api tests', () => {
       fungible_tokens: [],
       non_fungible_tokens: [],
     };
-    await db.updateSmartContract(client, dbTx, {
+    const smartContract: DbSmartContract = {
       tx_id: dbTx.tx_id,
       canonical: true,
       contract_id: 'ST11NJTTKGVT6D1HY4NJRVQWMQM7TVAR091EJ8P2Y.hello-world',
       block_height: 123,
       source_code: '()',
       abi: JSON.stringify(contractAbi),
+    };
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: dbTx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [smartContract],
+        },
+      ],
     });
     const txQuery = await getTxFromDataStore(db, { txId: dbTx.tx_id, includeUnanchored: false });
     expect(txQuery.found).toBe(true);
@@ -7841,7 +8026,6 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const txBuilder = await makeContractDeploy({
       contractName: 'hello-world',
       codeBody: '()',
@@ -7888,7 +8072,24 @@ describe('api tests', () => {
       parent_burn_block_hash: '0xaa',
       parent_burn_block_time: 1626122935,
     });
-    await db.updateTx(client, dbTx);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: dbTx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
 
     const txQuery = await getTxFromDataStore(db, { txId: dbTx.tx_id, includeUnanchored: false });
     expect(txQuery.found).toBe(true);
@@ -7965,7 +8166,6 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, dbBlock);
     const txBuilder = await makeContractDeploy({
       contractName: 'hello-world',
       codeBody: '()',
@@ -8012,7 +8212,24 @@ describe('api tests', () => {
       parent_burn_block_hash: '0xaa',
       parent_burn_block_time: 1626122935,
     });
-    await db.updateTx(client, dbTx);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: dbTx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
 
     const txQuery = await getTxFromDataStore(db, { txId: dbTx.tx_id, includeUnanchored: false });
     expect(txQuery.found).toBe(true);
@@ -8540,7 +8757,6 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateBlock(client, block);
     const tx: DbTx = {
       tx_id: '0x1234',
       tx_index: 4,
@@ -8575,8 +8791,6 @@ describe('api tests', () => {
       execution_cost_write_count: 0,
       execution_cost_write_length: 0,
     };
-    await db.updateTx(client, tx);
-
     const nftEvent: DbNftEvent = {
       canonical: true,
       event_type: DbEventTypeId.NonFungibleTokenAsset,
@@ -8590,8 +8804,24 @@ describe('api tests', () => {
       recipient: testAddr1,
       sender: testAddr2,
     };
-
-    await db.updateNftEvent(client, tx, nftEvent);
+    await db.update({
+      block: block,
+      microblocks: [],
+      minerRewards: [],
+      txs: [
+        {
+          tx: tx,
+          stxEvents: [],
+          stxLockEvents: [],
+          ftEvents: [],
+          nftEvents: [nftEvent],
+          contractLogEvents: [],
+          names: [],
+          namespaces: [],
+          smartContracts: [],
+        },
+      ],
+    });
 
     const expectedResponse = {
       tx_id: '0x1234',
@@ -9270,8 +9500,7 @@ describe('api tests', () => {
   });
 
   test('empty abi', async () => {
-    const source_code = `;; pg-mdomains-v1\n;;\n;; Decentralized domain names manager for Paradigma\n;; To facilitate acquisition of Stacks decentralized domain names\n(use-trait sip-010-trait 'SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE.sip-010-trait-ft-standard.sip-010-trait )\n(use-trait token-trait 'SP3YK7KWMYRCDMV5M4792T0T7DERQXHJJGGEPV1N8.paradigma-token-trait-v1.paradigma-token-trait)\n\n\n;; constants\n(define-constant ERR_INSUFFICIENT_FUNDS 101)\n(define-constant ERR_UNAUTHORIZED 109)\n(define-constant ERR_NAME_PREORDER_FUNDS_INSUFFICIENT 203)              ;; transfer to sponsored  \n(define-constant ERR_DOMAINNAME_MANAGER_NOT_FOUND 501)\n\n;; set constant for contract owner, used for updating token-uri\n(define-constant CONTRACT_OWNER tx-sender)\n\n;; initial value for domain wallet, set to this contract until initialized\n(define-data-var domainWallet principal 'SP3YK7KWMYRCDMV5M4792T0T7DERQXHJJGGEPV1N8)\n\n(define-data-var platformDomainWallet principal 'SPRK2JVQ988PYT19JSAJNR3K9YZAZGVY04XMC2Z7)  ;; Wallet where to transfer share fee services\n\n;; Manage domain name service fees\n;;  by accepted tokens\n(define-map DomainServiceFeeIndex\n   {\n     serviceId: uint\n   }\n   {\n     tokenSymbol: (string-ascii 32),\n   }  \n)\n\n(define-read-only (get-domain-service-fee-index (id uint))\n     (map-get? DomainServiceFeeIndex\n        {\n            serviceId: id\n        }\n     ) \n)\n\n(define-map DomainServiceFee\n   {\n     tokenSymbol: (string-ascii 32),\n   }\n   {\n     fee: uint\n   }\n)\n(define-read-only (get-domain-service-fee (tokenSymbol (string-ascii 32)))\n  (unwrap-panic (get fee \n                  (map-get? DomainServiceFee\n                     {tokenSymbol: tokenSymbol}\n                  )\n                )\n  )\n)\n(define-data-var domainServiceFeeCount uint u0)\n(define-read-only (get-domain-service-fee-count)\n  (var-get domainServiceFeeCount)\n)\n\n;; Set reference info for domain service fee\n;; protected function to update domain service fee variable\n(define-public (create-domain-service-fee \n                            (tokenSymbol (string-ascii 32))\n                            (fee uint) \n                )\n  (begin\n    (if (is-authorized-domain) \n      (if\n        (is-none \n          (map-get? DomainServiceFee\n             {\n                tokenSymbol: tokenSymbol\n             }\n          )       \n        )\n        (begin\n          (var-set domainServiceFeeCount (+ (var-get domainServiceFeeCount) u1))\n          (map-insert DomainServiceFeeIndex\n          { \n            serviceId: (var-get domainServiceFeeCount)\n          }\n           {\n            tokenSymbol: tokenSymbol\n           } \n          )\n          (map-insert DomainServiceFee \n           {\n             tokenSymbol: tokenSymbol\n           } \n           {\n             fee: fee\n           }\n          ) \n         (ok true)\n        )\n        (begin\n         (ok \n          (map-set DomainServiceFee \n           {\n            tokenSymbol: tokenSymbol\n           } \n           {\n             fee: fee\n           }\n          )\n         )\n        )\n      )\n      (err ERR_UNAUTHORIZED)\n    )\n  )\n)\n\n;; check if contract caller is contract owner\n(define-private (is-authorized-owner)\n  (is-eq contract-caller CONTRACT_OWNER)\n)\n\n;; Token flow management\n\n;; Stores participants DomainName service sell\n\n;; (define-data-var domainNameManagerCount -list (list 2000 uint) (list))\n\n(define-data-var domainNameManagerCount uint u0)\n\n(define-read-only (get-domain-name-manager-count)\n  (var-get domainNameManagerCount)\n)\n(define-map DomainNameManagersIndex\n  { domainNMId: uint }\n  {\n   nameSpace: (buff 48),                  ;; domain namespace defined in Blockchain Name Service (BNS) like .app\n   domainName: (buff 48)                  ;; domain name under a namespace like xck in xck.app\n  }\n)\n\n(define-read-only (get-domain-name-managers-index (id uint))\n     (map-get? DomainNameManagersIndex\n        {\n            domainNMId: id\n        }\n     ) \n)\n\n(define-map DomainNameManagers\n  {\n   nameSpace: (buff 48),                  ;; domain namespace defined in Blockchain Name Service (BNS) like .app\n   domainName: (buff 48)                  ;; domain name under a namespace like xck in xck.app\n  }\n  {\n    domainNameWallet: principal,           ;; DomainName manager account - branding and domainName token\n    domainNameFeePerc: uint,               ;; DomainName share percentage of fee (ie u10)\n    domainNameFeeTokenMint: uint,          ;; Tokens considered reciprocity to domainName token\n    domainNameTokenSymbol: (string-utf8 5), ;; Token Symbol used to mint domainName token\n    sponsoredWallet: principal,            ;; Sponsored institution account\n    sponsoredFeePerc: uint,                ;; Sponsored share percentage of fee (ie u10)\n    sponsoredDID: (string-utf8 256),       ;; Sponsored Stacks ID\n    sponsoredUri: (string-utf8 256),       ;; Sponsored website Uri\n    referencerFeeTokenMint: uint           ;; Tokens for promoters references as reciprocity \n  }\n)\n\n;; returns set domain wallet principal\n(define-read-only (get-domain-wallet)\n  (var-get domainWallet)\n)\n\n;; checks if caller is Auth contract\n(define-private (is-authorized-auth)   \n  (is-eq contract-caller 'SP3YK7KWMYRCDMV5M4792T0T7DERQXHJJGGEPV1N8)\n) \n\n;; protected function to update domain wallet variable\n(define-public (set-domain-wallet (newDomainWallet principal))\n  (begin\n    (asserts! (is-authorized-auth) (err ERR_UNAUTHORIZED))  \n    (ok (var-set domainWallet newDomainWallet))\n  )\n)\n\n;; check if contract caller is domain wallet\n(define-private (is-authorized-domain)\n    (is-eq contract-caller (var-get domainWallet))\n)\n\n;; Set reference info for domainName managers\n(define-public (create-domainname-manager \n                            (nameSpace (buff 48))\n                            (domainName (buff 48)) \n                            (domainNameWallet principal) \n                            (domainNameFeePerc uint) \n                            (domainNameFeeTokenMint uint) \n                            (tokenSymbol (string-utf8 5))\n                            (sponsoredWallet principal) \n                            (sponsoredFeePerc uint)\n                            (sponsoredDID (string-utf8 256))\n                            (sponsoredUri (string-utf8 256))\n                            (referencerFeeTokenMint uint)\n                )\n  (begin\n    (if (is-authorized-domain) \n      (if\n        (is-none \n           (map-get? DomainNameManagers \n             {\n                nameSpace: nameSpace,\n                domainName: domainName\n             }\n           )       \n        )\n        (begin\n          (var-set domainNameManagerCount (+ (var-get domainNameManagerCount) u1))\n          (map-insert DomainNameManagersIndex\n          { \n            domainNMId: (var-get domainNameManagerCount)\n          }\n           {\n            nameSpace: nameSpace,\n            domainName: domainName\n           } \n          )\n          (map-insert DomainNameManagers \n           {\n            nameSpace: nameSpace,\n            domainName: domainName\n           } \n           {\n            domainNameWallet:  domainNameWallet,\n            domainNameFeePerc: domainNameFeePerc,\n            domainNameFeeTokenMint: domainNameFeeTokenMint,\n            domainNameTokenSymbol: tokenSymbol,\n            sponsoredWallet: sponsoredWallet,\n            sponsoredFeePerc: sponsoredFeePerc,\n            sponsoredDID: sponsoredDID,\n            sponsoredUri: sponsoredUri,\n            referencerFeeTokenMint: referencerFeeTokenMint\n           }\n          ) \n         (ok true)\n        )\n        (begin\n         (ok \n          (map-set DomainNameManagers \n           {\n            nameSpace: nameSpace,\n            domainName: domainName\n           } \n           {\n            domainNameWallet:  domainNameWallet,\n            domainNameFeePerc: domainNameFeePerc,\n            domainNameFeeTokenMint: domainNameFeeTokenMint,\n            domainNameTokenSymbol: tokenSymbol,\n            sponsoredWallet: sponsoredWallet,\n            sponsoredFeePerc: sponsoredFeePerc,\n            sponsoredDID: sponsoredDID,\n            sponsoredUri: sponsoredUri,\n            referencerFeeTokenMint: referencerFeeTokenMint\n           }\n          )\n         )\n        )\n      )\n      (err ERR_UNAUTHORIZED)\n    )\n  )\n)\n\n;; Gets the principal for domainName managers\n(define-read-only (get-ref-domainname-manager (nameSpace (buff 48)) (domainName (buff 48)))\n   (ok (unwrap! (map-get? DomainNameManagers \n                        {\n                         nameSpace: nameSpace,\n                         domainName: domainName\n                        }\n               )\n               (err ERR_DOMAINNAME_MANAGER_NOT_FOUND)\n      )\n   )\n)\n\n\n;; Makes the name-preorder\n(define-public (bns-name-preorder (hashedSaltedFqn (buff 20)) (stxToBurn uint) (paymentSIP010Trait <sip-010-trait>) (reciprocityTokenTrait <token-trait>) (referencerWallet principal))\n  (begin\n    (asserts! (> (stx-get-balance tx-sender) stxToBurn) (err ERR_NAME_PREORDER_FUNDS_INSUFFICIENT))\n    (let \n        (\n          (symbol (unwrap-panic (contract-call? paymentSIP010Trait get-symbol)))\n          (fee (get-domain-service-fee symbol))\n          (toBurn (- stxToBurn fee))\n          (tr (order-to-register-domain tx-sender fee 0x616c6c 0x616c6c 0x737461636b73 paymentSIP010Trait reciprocityTokenTrait referencerWallet))  ;; Includes subdomain:all namespace:all name:stacks as domainnames\n        )\n        (ok (try! (contract-call? 'SP000000000000000000002Q6VF78.bns name-preorder hashedSaltedFqn toBurn)))\n    )     \n  )\n)\n\n;; 
-    Gives the order to register a domain and subdomain associated to a domainName and transfers to the domain managers\n(define-public (order-to-register-domain (sender principal) (fee uint) (nameSpace (buff 48)) (domainName (buff 48)) (subDomain (buff 48)) \n                                         (paymentSIP010Trait <sip-010-trait>) (reciprocityTokenTrait <token-trait>) (referencerWallet principal))\n   (begin\n    (asserts! (is-eq tx-sender sender) (err ERR_UNAUTHORIZED))\n    (asserts! (> (unwrap-panic (contract-call? paymentSIP010Trait get-balance tx-sender)) fee) (err ERR_INSUFFICIENT_FUNDS))\n    (let \n    (\n       (domainNameRef  \n             (unwrap-panic (map-get? DomainNameManagers \n                        {\n                         nameSpace: nameSpace,\n                         domainName: domainName\n                        }\n               )\n             )\n       )\n       (sponsoredFeePerc \n             (get sponsoredFeePerc domainNameRef)\n       )\n       (sponsoredWallet \n            (get sponsoredWallet domainNameRef)\n       )\n       (domainNameFeePerc \n          (get domainNameFeePerc domainNameRef)\n       )    \n      (domainNameWallet \n             (get domainNameWallet domainNameRef)\n       )\n      (domainNameFeeTokenMint \n              (get domainNameFeeTokenMint domainNameRef)\n       )\n      (referencerFeeTokenMint\n               (get referencerFeeTokenMint domainNameRef))\n       (transferToSponsored (/ (* sponsoredFeePerc  fee) u100) )\n       (transferToDomainManager (/ (* domainNameFeePerc  fee) u100))\n       (transferToPlatform (/ (* (- u100 (+ domainNameFeePerc sponsoredFeePerc ) ) fee) u100))\n       (platformDWallet (get-platform-domain-wallet))\n     )  \n       ;; transfer to sponsored  \n     (if (> transferToSponsored u0)\n        (unwrap-panic (contract-call? paymentSIP010Trait transfer \n                             transferToSponsored \n                             sender \n                             sponsoredWallet\n                             none\n                      )\n        )\n        true\n     )\n         ;; transfer to domain name manager\n      (if (> transferToDomainManager u0)\n        (unwrap-panic (contract-call? paymentSIP010Trait transfer\n                             transferToDomainManager\n                             sender\n                             domainNameWallet\n                             none\n                     )\n        )\n        true\n      )\n        ;; transfer to platform manager\n      (if (> transferToPlatform u0)\n         (unwrap-panic (contract-call? paymentSIP010Trait transfer\n                              transferToPlatform\n                              sender \n                              platformDWallet\n                              none\n                )\n         )\n          true\n      )\n         ;; mint token to sender as reciprocity\n      (if (> domainNameFeeTokenMint u0)\n        (unwrap-panic (as-contract (contract-call? reciprocityTokenTrait \n                            mint \n                            domainNameFeeTokenMint\n                            sender\n                                   )\n                      )\n        )\n        true\n      )\n         ;; mint token for referencer (if there is) as reciprocity\n      (if (> referencerFeeTokenMint u0)\n        (unwrap-panic (as-contract (contract-call? reciprocityTokenTrait \n                            mint \n                            referencerFeeTokenMint\n                            referencerWallet\n                                   )\n                      )\n        )\n        true\n      )\n    )\n   (ok true)\n  )\n)\n\n;; returns set domain wallet principal\n(define-read-only (get-platform-domain-wallet)\n  (var-get platformDomainWallet)\n)\n;; protected function to update domain wallet variable\n(define-public (set-platform-domain-wallet (newPDomainWallet principal))\n  (begin\n    (asserts! (is-authorized-auth) (err ERR_UNAUTHORIZED))  \n    (ok (var-set platformDomainWallet newPDomainWallet))\n  )\n)`;
+    const source_code = '(some-src)';
     const abi = `{\"maps\":[{\"key\":{\"tuple\":[{\"name\":\"domainName\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"nameSpace\",\"type\":{\"buffer\":{\"length\":48}}}]},\"name\":\"DomainNameManagers\",\"value\":{\"tuple\":[{\"name\":\"domainNameFeePerc\",\"type\":\"uint128\"},{\"name\":\"domainNameFeeTokenMint\",\"type\":\"uint128\"},{\"name\":\"domainNameTokenSymbol\",\"type\":{\"string-utf8\":{\"length\":5}}},{\"name\":\"domainNameWallet\",\"type\":\"principal\"},{\"name\":\"referencerFeeTokenMint\",\"type\":\"uint128\"},{\"name\":\"sponsoredDID\",\"type\":{\"string-utf8\":{\"length\":256}}},{\"name\":\"sponsoredFeePerc\",\"type\":\"uint128\"},{\"name\":\"sponsoredUri\",\"type\":{\"string-utf8\":{\"length\":256}}},{\"name\":\"sponsoredWallet\",\"type\":\"principal\"}]}},{\"key\":{\"tuple\":[{\"name\":\"domainNMId\",\"type\":\"uint128\"}]},\"name\":\"DomainNameManagersIndex\",\"value\":{\"tuple\":[{\"name\":\"domainName\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"nameSpace\",\"type\":{\"buffer\":{\"length\":48}}}]}},{\"key\":{\"tuple\":[{\"name\":\"tokenSymbol\",\"type\":{\"string-ascii\":{\"length\":32}}}]},\"name\":\"DomainServiceFee\",\"value\":{\"tuple\":[{\"name\":\"fee\",\"type\":\"uint128\"}]}},{\"key\":{\"tuple\":[{\"name\":\"serviceId\",\"type\":\"uint128\"}]},\"name\":\"DomainServiceFeeIndex\",\"value\":{\"tuple\":[{\"name\":\"tokenSymbol\",\"type\":{\"string-ascii\":{\"length\":32}}}]}}],\"functions\":[{\"args\":[],\"name\":\"is-authorized-auth\",\"access\":\"private\",\"outputs\":{\"type\":\"bool\"}},{\"args\":[],\"name\":\"is-authorized-domain\",\"access\":\"private\",\"outputs\":{\"type\":\"bool\"}},{\"args\":[],\"name\":\"is-authorized-owner\",\"access\":\"private\",\"outputs\":{\"type\":\"bool\"}},{\"args\":[{\"name\":\"hashedSaltedFqn\",\"type\":{\"buffer\":{\"length\":20}}},{\"name\":\"stxToBurn\",\"type\":\"uint128\"},{\"name\":\"paymentSIP010Trait\",\"type\":\"trait_reference\"},{\"name\":\"reciprocityTokenTrait\",\"type\":\"trait_reference\"},{\"name\":\"referencerWallet\",\"type\":\"principal\"}],\"name\":\"bns-name-preorder\",\"access\":\"public\",\"outputs\":{\"type\":{\"response\":{\"ok\":\"uint128\",\"error\":\"int128\"}}}},{\"args\":[{\"name\":\"tokenSymbol\",\"type\":{\"string-ascii\":{\"length\":32}}},{\"name\":\"fee\",\"type\":\"uint128\"}],\"name\":\"create-domain-service-fee\",\"access\":\"public\",\"outputs\":{\"type\":{\"response\":{\"ok\":\"bool\",\"error\":\"int128\"}}}},{\"args\":[{\"name\":\"nameSpace\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"domainName\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"domainNameWallet\",\"type\":\"principal\"},{\"name\":\"domainNameFeePerc\",\"type\":\"uint128\"},{\"name\":\"domainNameFeeTokenMint\",\"type\":\"uint128\"},{\"name\":\"tokenSymbol\",\"type\":{\"string-utf8\":{\"length\":5}}},{\"name\":\"sponsoredWallet\",\"type\":\"principal\"},{\"name\":\"sponsoredFeePerc\",\"type\":\"uint128\"},{\"name\":\"sponsoredDID\",\"type\":{\"string-utf8\":{\"length\":256}}},{\"name\":\"sponsoredUri\",\"type\":{\"string-utf8\":{\"length\":256}}},{\"name\":\"referencerFeeTokenMint\",\"type\":\"uint128\"}],\"name\":\"create-domainname-manager\",\"access\":\"public\",\"outputs\":{\"type\":{\"response\":{\"ok\":\"bool\",\"error\":\"int128\"}}}},{\"args\":[{\"name\":\"sender\",\"type\":\"principal\"},{\"name\":\"fee\",\"type\":\"uint128\"},{\"name\":\"nameSpace\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"domainName\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"subDomain\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"paymentSIP010Trait\",\"type\":\"trait_reference\"},{\"name\":\"reciprocityTokenTrait\",\"type\":\"trait_reference\"},{\"name\":\"referencerWallet\",\"type\":\"principal\"}],\"name\":\"order-to-register-domain\",\"access\":\"public\",\"outputs\":{\"type\":{\"response\":{\"ok\":\"bool\",\"error\":\"int128\"}}}},{\"args\":[{\"name\":\"newDomainWallet\",\"type\":\"principal\"}],\"name\":\"set-domain-wallet\",\"access\":\"public\",\"outputs\":{\"type\":{\"response\":{\"ok\":\"bool\",\"error\":\"int128\"}}}},{\"args\":[{\"name\":\"newPDomainWallet\",\"type\":\"principal\"}],\"name\":\"set-platform-domain-wallet\",\"access\":\"public\",\"outputs\":{\"type\":{\"response\":{\"ok\":\"bool\",\"error\":\"int128\"}}}},{\"args\":[],\"name\":\"get-domain-name-manager-count\",\"access\":\"read_only\",\"outputs\":{\"type\":\"uint128\"}},{\"args\":[{\"name\":\"id\",\"type\":\"uint128\"}],\"name\":\"get-domain-name-managers-index\",\"access\":\"read_only\",\"outputs\":{\"type\":{\"optional\":{\"tuple\":[{\"name\":\"domainName\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"nameSpace\",\"type\":{\"buffer\":{\"length\":48}}}]}}}},{\"args\":[{\"name\":\"tokenSymbol\",\"type\":{\"string-ascii\":{\"length\":32}}}],\"name\":\"get-domain-service-fee\",\"access\":\"read_only\",\"outputs\":{\"type\":\"uint128\"}},{\"args\":[],\"name\":\"get-domain-service-fee-count\",\"access\":\"read_only\",\"outputs\":{\"type\":\"uint128\"}},{\"args\":[{\"name\":\"id\",\"type\":\"uint128\"}],\"name\":\"get-domain-service-fee-index\",\"access\":\"read_only\",\"outputs\":{\"type\":{\"optional\":{\"tuple\":[{\"name\":\"tokenSymbol\",\"type\":{\"string-ascii\":{\"length\":32}}}]}}}},{\"args\":[],\"name\":\"get-domain-wallet\",\"access\":\"read_only\",\"outputs\":{\"type\":\"principal\"}},{\"args\":[],\"name\":\"get-platform-domain-wallet\",\"access\":\"read_only\",\"outputs\":{\"type\":\"principal\"}},{\"args\":[{\"name\":\"nameSpace\",\"type\":{\"buffer\":{\"length\":48}}},{\"name\":\"domainName\",\"type\":{\"buffer\":{\"length\":48}}}],\"name\":\"get-ref-domainname-manager\",\"access\":\"read_only\",\"outputs\":{\"type\":{\"response\":{\"ok\":{\"tuple\":[{\"name\":\"domainNameFeePerc\",\"type\":\"uint128\"},{\"name\":\"domainNameFeeTokenMint\",\"type\":\"uint128\"},{\"name\":\"domainNameTokenSymbol\",\"type\":{\"string-utf8\":{\"length\":5}}},{\"name\":\"domainNameWallet\",\"type\":\"principal\"},{\"name\":\"referencerFeeTokenMint\",\"type\":\"uint128\"},{\"name\":\"sponsoredDID\",\"type\":{\"string-utf8\":{\"length\":256}}},{\"name\":\"sponsoredFeePerc\",\"type\":\"uint128\"},{\"name\":\"sponsoredUri\",\"type\":{\"string-utf8\":{\"length\":256}}},{\"name\":\"sponsoredWallet\",\"type\":\"principal\"}]},\"error\":\"int128\"}}}}],\"variables\":[{\"name\":\"CONTRACT_OWNER\",\"type\":\"principal\",\"access\":\"constant\"},{\"name\":\"ERR_DOMAINNAME_MANAGER_NOT_FOUND\",\"type\":\"int128\",\"access\":\"constant\"},{\"name\":\"ERR_INSUFFICIENT_FUNDS\",\"type\":\"int128\",\"access\":\"constant\"},{\"name\":\"ERR_NAME_PREORDER_FUNDS_INSUFFICIENT\",\"type\":\"int128\",\"access\":\"constant\"},{\"name\":\"ERR_UNAUTHORIZED\",\"type\":\"int128\",\"access\":\"constant\"},{\"name\":\"domainNameManagerCount\",\"type\":\"uint128\",\"access\":\"variable\"},{\"name\":\"domainServiceFeeCount\",\"type\":\"uint128\",\"access\":\"variable\"},{\"name\":\"domainWallet\",\"type\":\"principal\",\"access\":\"variable\"},{\"name\":\"platformDomainWallet\",\"type\":\"principal\",\"access\":\"variable\"}],\"fungible_tokens\":[],\"non_fungible_tokens\":[]}`;
     const tx1: DbTx = {
       type_id: DbTxTypeId.ContractCall,
@@ -9307,6 +9536,10 @@ describe('api tests', () => {
       execution_cost_write_length: 339,
       contract_call_contract_id: 'SP3YK7KWMYRCDMV5M4792T0T7DERQXHJJGGEPV1N8.pg-mdomains-v1',
       contract_call_function_name: 'bns-name-preorder',
+      contract_call_function_args: createClarityValueArray(
+        bufferCV(Buffer.from('test')),
+        uintCV(1234n)
+      ),
     };
     const tx2: DbTx = {
       type_id: DbTxTypeId.ContractCall,
@@ -9342,6 +9575,10 @@ describe('api tests', () => {
       execution_cost_write_length: 339,
       contract_call_contract_id: 'SP000000000000000000002Q6VF78.bns',
       contract_call_function_name: 'name-register',
+      contract_call_function_args: createClarityValueArray(
+        bufferCV(Buffer.from('test')),
+        uintCV(1234n)
+      ),
     };
     const contractCall: DbSmartContract = {
       tx_id: '0x668142abbcabb846e3f83183325325071a8b4882dcf5476a38148cb5b738fc83',
@@ -9357,7 +9594,7 @@ describe('api tests', () => {
       contract_id: 'SP000000000000000000002Q6VF78.bns',
       block_height: 1,
       source_code,
-      abi: JSON.stringify(''),
+      abi: JSON.stringify(null),
     };
     const dbBlock: DbBlock = {
       block_hash: '0xd10ccecfd7ac9e5f8a10de0532fac028559b31a6ff494d82147f6297fb663139',
@@ -9418,6 +9655,20 @@ describe('api tests', () => {
         function_name: 'bns-name-preorder',
         function_signature:
           '(define-public (bns-name-preorder (hashedSaltedFqn (buff 20)) (stxToBurn uint) (paymentSIP010Trait trait_reference) (reciprocityTokenTrait trait_reference) (referencerWallet principal)))',
+        function_args: [
+          {
+            hex: '0x020000000474657374',
+            name: 'hashedSaltedFqn',
+            repr: '0x74657374',
+            type: '(buff 20)',
+          },
+          {
+            hex: '0x01000000000000000000000000000004d2',
+            name: 'stxToBurn',
+            repr: 'u1234',
+            type: 'uint',
+          },
+        ],
       },
     };
 
@@ -9491,12 +9742,180 @@ describe('api tests', () => {
         contract_id: 'SP000000000000000000002Q6VF78.bns',
         function_name: 'name-register',
         function_signature: '',
+        function_args: [
+          {
+            hex: '0x020000000474657374',
+            name: '',
+            repr: '0x74657374',
+            type: '',
+          },
+          {
+            hex: '0x01000000000000000000000000000004d2',
+            name: '',
+            repr: 'u1234',
+            type: '',
+          },
+        ],
       },
       events: [],
     };
     const searchResult2 = await supertest(api.server).get(`/extended/v1/tx/${tx2.tx_id}`);
     expect(searchResult2.status).toBe(200);
     expect(JSON.parse(searchResult2.text)).toEqual(expected2);
+
+    const expected3 = {
+      abi: null,
+      block_height: 1,
+      canonical: true,
+      contract_id: contractCall2.contract_id,
+      source_code: contractCall2.source_code,
+      tx_id: contractCall2.tx_id,
+    };
+    const contractResult1 = await supertest(api.server).get(
+      `/extended/v1/contract/${contractCall2.contract_id}`
+    );
+    expect(contractResult1.status).toBe(200);
+    expect(contractResult1.body).toEqual(expected3);
+
+    const expected4 = {
+      abi: contractCall.abi,
+      block_height: 1,
+      canonical: true,
+      contract_id: contractCall.contract_id,
+      source_code: contractCall.source_code,
+      tx_id: contractCall.tx_id,
+    };
+    const contractResult2 = await supertest(api.server).get(
+      `/extended/v1/contract/${contractCall.contract_id}`
+    );
+    expect(contractResult2.status).toBe(200);
+    expect({ ...contractResult2.body, abi: JSON.parse(contractResult2.body.abi) }).toEqual({
+      ...expected4,
+      abi: JSON.parse(expected4.abi as string),
+    });
+
+    const mempoolTx1: DbMempoolTx = {
+      type_id: DbTxTypeId.ContractCall,
+      tx_id: '0x4413739d6a3f86d4597f5296cc536f6890e2affff9aece285e37399be697b43f',
+      anchor_mode: DbTxAnchorMode.Any,
+      nonce: 0,
+      raw_tx: Buffer.alloc(0),
+      status: DbTxStatus.Success,
+      post_conditions: Buffer.from([0x01, 0xf5]),
+      fee_rate: 139200n,
+      sponsored: false,
+      sponsor_address: undefined,
+      sender_address: 'SPX3DV9X9CGA8P14B3CMP2X8DBW6ZDXEAXDNPTER',
+      origin_hash_mode: 1,
+      contract_call_contract_id: 'SP000000000000000000002Q6VF78.bns',
+      contract_call_function_name: 'name-register',
+      contract_call_function_args: createClarityValueArray(
+        bufferCV(Buffer.from('test')),
+        uintCV(1234n)
+      ),
+      pruned: false,
+      receipt_time: 0,
+    };
+    await db.updateMempoolTxs({ mempoolTxs: [mempoolTx1] });
+
+    const expectedMempoolResult1 = {
+      anchor_mode: 'any',
+      contract_call: {
+        contract_id: 'SP000000000000000000002Q6VF78.bns',
+        function_name: 'name-register',
+        function_signature: '',
+        function_args: [
+          {
+            hex: '0x020000000474657374',
+            name: '',
+            repr: '0x74657374',
+            type: '',
+          },
+          {
+            hex: '0x01000000000000000000000000000004d2',
+            name: '',
+            repr: 'u1234',
+            type: '',
+          },
+        ],
+      },
+      fee_rate: '139200',
+      nonce: 0,
+      post_condition_mode: 'allow',
+      post_conditions: [],
+      receipt_time: 0,
+      receipt_time_iso: '1970-01-01T00:00:00.000Z',
+      sender_address: 'SPX3DV9X9CGA8P14B3CMP2X8DBW6ZDXEAXDNPTER',
+      sponsored: false,
+      tx_id: mempoolTx1.tx_id,
+      tx_status: 'success',
+      tx_type: 'contract_call',
+    };
+    const mempoolTxResult1 = await supertest(api.server).get(`/extended/v1/tx/${mempoolTx1.tx_id}`);
+    expect(mempoolTxResult1.status).toBe(200);
+    expect(mempoolTxResult1.body).toEqual(expectedMempoolResult1);
+
+    const mempoolTx2: DbMempoolTx = {
+      type_id: DbTxTypeId.ContractCall,
+      tx_id: '0x5513739d6a3f86d4597f5296cc536f6890e2affff9aece285e37399be697b43f',
+      anchor_mode: DbTxAnchorMode.Any,
+      nonce: 0,
+      raw_tx: Buffer.alloc(0),
+      status: DbTxStatus.Success,
+      post_conditions: Buffer.from([0x01, 0xf5]),
+      fee_rate: 139200n,
+      sponsored: false,
+      sponsor_address: undefined,
+      sender_address: 'SPX3DV9X9CGA8P14B3CMP2X8DBW6ZDXEAXDNPTER',
+      origin_hash_mode: 1,
+      contract_call_contract_id: 'SP3YK7KWMYRCDMV5M4792T0T7DERQXHJJGGEPV1N8.pg-mdomains-v1',
+      contract_call_function_name: 'bns-name-preorder',
+      contract_call_function_args: createClarityValueArray(
+        bufferCV(Buffer.from('test')),
+        uintCV(1234n)
+      ),
+      pruned: false,
+      receipt_time: 0,
+    };
+    await db.updateMempoolTxs({ mempoolTxs: [mempoolTx2] });
+
+    const expectedMempoolResult2 = {
+      anchor_mode: 'any',
+      contract_call: {
+        contract_id: 'SP3YK7KWMYRCDMV5M4792T0T7DERQXHJJGGEPV1N8.pg-mdomains-v1',
+        function_args: [
+          {
+            hex: '0x020000000474657374',
+            name: 'hashedSaltedFqn',
+            repr: '0x74657374',
+            type: '(buff 20)',
+          },
+          {
+            hex: '0x01000000000000000000000000000004d2',
+            name: 'stxToBurn',
+            repr: 'u1234',
+            type: 'uint',
+          },
+        ],
+        function_name: 'bns-name-preorder',
+        function_signature:
+          '(define-public (bns-name-preorder (hashedSaltedFqn (buff 20)) (stxToBurn uint) (paymentSIP010Trait trait_reference) (reciprocityTokenTrait trait_reference) (referencerWallet principal)))',
+      },
+      fee_rate: '139200',
+      nonce: 0,
+      post_condition_mode: 'allow',
+      post_conditions: [],
+      receipt_time: 0,
+      receipt_time_iso: '1970-01-01T00:00:00.000Z',
+      sender_address: 'SPX3DV9X9CGA8P14B3CMP2X8DBW6ZDXEAXDNPTER',
+      sponsored: false,
+      tx_id: mempoolTx2.tx_id,
+      tx_status: 'success',
+      tx_type: 'contract_call',
+    };
+    const mempoolTxResult2 = await supertest(api.server).get(`/extended/v1/tx/${mempoolTx2.tx_id}`);
+    expect(mempoolTxResult2.status).toBe(200);
+    expect(mempoolTxResult2.body).toEqual(expectedMempoolResult2);
   });
 
   afterEach(async () => {

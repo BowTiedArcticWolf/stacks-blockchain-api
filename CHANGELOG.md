@@ -1,3 +1,108 @@
+## [3.0.2](https://github.com/hirosystems/stacks-blockchain-api/compare/v3.0.1...v3.0.2) (2022-03-23)
+
+
+### Bug Fixes
+
+* filter canonical txs correctly for account tx history ([#1120](https://github.com/hirosystems/stacks-blockchain-api/issues/1120)) ([eabe27b](https://github.com/hirosystems/stacks-blockchain-api/commit/eabe27b4ac5e94a844805c2fee144b8c3df0fce4))
+
+## [3.0.1](https://github.com/hirosystems/stacks-blockchain-api/compare/v3.0.0...v3.0.1) (2022-03-08)
+
+
+### Bug Fixes
+
+* send address tx updates correctly on microblocks ([#1089](https://github.com/hirosystems/stacks-blockchain-api/issues/1089)) ([dbd5a49](https://github.com/hirosystems/stacks-blockchain-api/commit/dbd5a49c6e3dab06cb080c8c2de7dcc07aeb6805))
+
+# [3.0.0](https://github.com/hirosystems/stacks-blockchain-api/compare/v2.1.1...v3.0.0) (2022-03-03)
+
+
+### Bug Fixes
+
+* capture re-organized txs correctly in `/extended/v1/:address/transactions` ([#1074](https://github.com/hirosystems/stacks-blockchain-api/issues/1074)) ([81d039d](https://github.com/hirosystems/stacks-blockchain-api/commit/81d039d72219c51d517d27e69cedfc0cc8e10c7e))
+* deactivate indices before subdomain import ([#1086](https://github.com/hirosystems/stacks-blockchain-api/issues/1086)) ([d8d4d4c](https://github.com/hirosystems/stacks-blockchain-api/commit/d8d4d4c35e0fd197668b0b6c56700f437290c734))
+* index principal_stx_txs tx_id to speed up reorg updates ([#1080](https://github.com/hirosystems/stacks-blockchain-api/issues/1080)) ([f6d7d0c](https://github.com/hirosystems/stacks-blockchain-api/commit/f6d7d0cbf6b0bfd5a2cf0406570ed1c5d99e9220))
+* principal_stx_txs sorting ([#1056](https://github.com/hirosystems/stacks-blockchain-api/issues/1056)) ([b0a0e94](https://github.com/hirosystems/stacks-blockchain-api/commit/b0a0e94ecd40bab5ea7d3c7705198ac9ea0ab399))
+* remove unused indices, add others for re-org queries ([#1087](https://github.com/hirosystems/stacks-blockchain-api/issues/1087)) ([2a2fb8d](https://github.com/hirosystems/stacks-blockchain-api/commit/2a2fb8d415e1910cb4e7ae721c28c0f711a11601))
+* sort NFT events by event_index too ([#1063](https://github.com/hirosystems/stacks-blockchain-api/issues/1063)) ([77b2587](https://github.com/hirosystems/stacks-blockchain-api/commit/77b25878f652393a6066dad5c6b39569eb8a194a))
+
+
+* chore!: major version bump for breaking db schema changes ([296c619](https://github.com/hirosystems/stacks-blockchain-api/commit/296c619f81c480db9246ab8ea0b9fbf3c7b982b1))
+
+
+### Features
+
+* add `chain_tip` materialized view to track chain tip stats ([#1028](https://github.com/hirosystems/stacks-blockchain-api/issues/1028)) ([803ac18](https://github.com/hirosystems/stacks-blockchain-api/commit/803ac189c25b6a31ae94063a6f1a4ede1f0dba98))
+* add chain tip info to `/extended/v1/status` ([#1070](https://github.com/hirosystems/stacks-blockchain-api/issues/1070)) ([fb573b1](https://github.com/hirosystems/stacks-blockchain-api/commit/fb573b11e4b8768d87e6b9c557fec92945fadd9a))
+* added feature for rendering docs ([#991](https://github.com/hirosystems/stacks-blockchain-api/issues/991)) ([a521a39](https://github.com/hirosystems/stacks-blockchain-api/commit/a521a390b2d973851f94a8962ec2b70a5937c6a7))
+* change string and hex column indices to Hash method ([#1042](https://github.com/hirosystems/stacks-blockchain-api/issues/1042)) ([aae6cc0](https://github.com/hirosystems/stacks-blockchain-api/commit/aae6cc0c643a5c6056e596768080119e2c84bb21))
+
+
+### BREAKING CHANGES
+
+* use event-replay to upgrade, this version includes breaking changes to the db sql schema
+
+# [3.0.0-beta.3](https://github.com/hirosystems/stacks-blockchain-api/compare/v3.0.0-beta.2...v3.0.0-beta.3) (2022-02-28)
+
+
+### Bug Fixes
+
+* remove unused indices, add others for re-org queries ([#1087](https://github.com/hirosystems/stacks-blockchain-api/issues/1087)) ([2a2fb8d](https://github.com/hirosystems/stacks-blockchain-api/commit/2a2fb8d415e1910cb4e7ae721c28c0f711a11601))
+
+# [3.0.0-beta.2](https://github.com/hirosystems/stacks-blockchain-api/compare/v3.0.0-beta.1...v3.0.0-beta.2) (2022-02-28)
+
+
+### Bug Fixes
+
+* deactivate indices before subdomain import ([#1086](https://github.com/hirosystems/stacks-blockchain-api/issues/1086)) ([d8d4d4c](https://github.com/hirosystems/stacks-blockchain-api/commit/d8d4d4c35e0fd197668b0b6c56700f437290c734))
+* index principal_stx_txs tx_id to speed up reorg updates ([#1080](https://github.com/hirosystems/stacks-blockchain-api/issues/1080)) ([f6d7d0c](https://github.com/hirosystems/stacks-blockchain-api/commit/f6d7d0cbf6b0bfd5a2cf0406570ed1c5d99e9220))
+
+# [3.0.0-beta.1](https://github.com/hirosystems/stacks-blockchain-api/compare/v2.1.1...v3.0.0-beta.1) (2022-02-25)
+
+
+### Bug Fixes
+
+* capture re-organized txs correctly in `/extended/v1/:address/transactions` ([#1074](https://github.com/hirosystems/stacks-blockchain-api/issues/1074)) ([81d039d](https://github.com/hirosystems/stacks-blockchain-api/commit/81d039d72219c51d517d27e69cedfc0cc8e10c7e))
+* principal_stx_txs sorting ([#1056](https://github.com/hirosystems/stacks-blockchain-api/issues/1056)) ([b0a0e94](https://github.com/hirosystems/stacks-blockchain-api/commit/b0a0e94ecd40bab5ea7d3c7705198ac9ea0ab399))
+* sort NFT events by event_index too ([#1063](https://github.com/hirosystems/stacks-blockchain-api/issues/1063)) ([77b2587](https://github.com/hirosystems/stacks-blockchain-api/commit/77b25878f652393a6066dad5c6b39569eb8a194a))
+
+
+* chore!: major version bump for breaking db schema changes ([296c619](https://github.com/hirosystems/stacks-blockchain-api/commit/296c619f81c480db9246ab8ea0b9fbf3c7b982b1))
+
+
+### Features
+
+* add `chain_tip` materialized view to track chain tip stats ([#1028](https://github.com/hirosystems/stacks-blockchain-api/issues/1028)) ([803ac18](https://github.com/hirosystems/stacks-blockchain-api/commit/803ac189c25b6a31ae94063a6f1a4ede1f0dba98))
+* add chain tip info to `/extended/v1/status` ([#1070](https://github.com/hirosystems/stacks-blockchain-api/issues/1070)) ([fb573b1](https://github.com/hirosystems/stacks-blockchain-api/commit/fb573b11e4b8768d87e6b9c557fec92945fadd9a))
+* added feature for rendering docs ([#991](https://github.com/hirosystems/stacks-blockchain-api/issues/991)) ([a521a39](https://github.com/hirosystems/stacks-blockchain-api/commit/a521a390b2d973851f94a8962ec2b70a5937c6a7))
+* change string and hex column indices to Hash method ([#1042](https://github.com/hirosystems/stacks-blockchain-api/issues/1042)) ([aae6cc0](https://github.com/hirosystems/stacks-blockchain-api/commit/aae6cc0c643a5c6056e596768080119e2c84bb21))
+
+
+### BREAKING CHANGES
+
+* use event-replay to upgrade, this version includes breaking changes to the db sql schema
+
+## [2.1.1](https://github.com/hirosystems/stacks-blockchain-api/compare/v2.1.0...v2.1.1) (2022-02-09)
+
+
+### Bug Fixes
+
+* use primary pg config for notifier ([#1053](https://github.com/hirosystems/stacks-blockchain-api/issues/1053)) ([018cd5b](https://github.com/hirosystems/stacks-blockchain-api/commit/018cd5b83492a004759eafea003abff581e31380))
+
+# [2.1.0](https://github.com/hirosystems/stacks-blockchain-api/compare/v2.0.0...v2.1.0) (2022-02-09)
+
+
+### Bug Fixes
+
+* add token metadata error modes to warn on missing rosetta FT metadata ([#1049](https://github.com/hirosystems/stacks-blockchain-api/issues/1049)) ([abff4b4](https://github.com/hirosystems/stacks-blockchain-api/commit/abff4b474ed0ba17defb6becad785472e493b2e2))
+* bug in tx ordering when querying txs by address ([#1044](https://github.com/hirosystems/stacks-blockchain-api/issues/1044)) ([bbde339](https://github.com/hirosystems/stacks-blockchain-api/commit/bbde3394d1226fbfe82f91c482d7dba9d6781b5e))
+* change status code for Rosetta request client errors to 400 [#1009](https://github.com/hirosystems/stacks-blockchain-api/issues/1009) ([#1036](https://github.com/hirosystems/stacks-blockchain-api/issues/1036)) ([b29466c](https://github.com/hirosystems/stacks-blockchain-api/commit/b29466c46558b45986790d28b08cf55eed2e19bf))
+* include more types of pg connection errors in startup retry logic ([#1051](https://github.com/hirosystems/stacks-blockchain-api/issues/1051)) ([f9e88cb](https://github.com/hirosystems/stacks-blockchain-api/commit/f9e88cba6d47c3b755aed372cb9cd08a69a4d4fe))
+* reconnect broken pgnotify clients ([#970](https://github.com/hirosystems/stacks-blockchain-api/issues/970)) ([9758e51](https://github.com/hirosystems/stacks-blockchain-api/commit/9758e51806f04a804846fd9e3b9b51189f940c23))
+
+
+### Features
+
+* add usage details for each pg connection via application_name ([#1043](https://github.com/hirosystems/stacks-blockchain-api/issues/1043)) ([87596c7](https://github.com/hirosystems/stacks-blockchain-api/commit/87596c7980a20c8bb0b485d9e1c0e184e9fa5e2b))
+
 # [2.0.0](https://github.com/hirosystems/stacks-blockchain-api/compare/v1.0.7...v2.0.0) (2022-02-01)
 
 

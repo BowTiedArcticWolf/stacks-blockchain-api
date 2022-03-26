@@ -69,11 +69,16 @@ describe('BNS API tests', () => {
   beforeAll(async () => {
     process.env.PG_DATABASE = 'postgres';
     await cycleMigrations();
-    db = await PgDataStore.connect();
+    db = await PgDataStore.connect({ usageName: 'tests' });
     client = await db.pool.connect();
     api = await startApiServer({ datastore: db, chainId: ChainID.Testnet, httpLogLevel: 'silly' });
 
-    await db.updateBlock(client, dbBlock);
+    await db.update({
+      block: dbBlock,
+      microblocks: [],
+      minerRewards: [],
+      txs: [],
+    });
 
     const namespace: DbBnsNamespace = {
       namespace_id: 'abc',
