@@ -156,6 +156,14 @@ jobs:
         uses: codecov/codecov-action@v2
         if: always()
 
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@master
+        if: always()
+        with:
+          github-token: ${{ secrets.github_token }}
+          flag-name: run-${{ github.job }}
+          parallel: true
+
   test-bns:
     runs-on: ubuntu-latest
     steps:
@@ -508,7 +516,7 @@ jobs:
         uses: docker/metadata-action@v3
         with:
           images: |
-            phx.ocir.io/ax3gejcudsku/stacks-blockchain
+            phx.ocir.io/ax3gejcudsku/${{ github.event.repository.name }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
