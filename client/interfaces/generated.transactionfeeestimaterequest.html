@@ -3,7 +3,7 @@
 <head>
 	<meta charset="utf-8">
 	<meta http-equiv="X-UA-Compatible" content="IE=edge">
-	<title>GetSubdomainAtTransactionRequest | @stacks/blockchain-api-client</title>
+	<title>TransactionFeeEstimateRequest | @stacks/blockchain-api-client</title>
 	<meta name="description" content="Documentation for @stacks/blockchain-api-client">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<link rel="stylesheet" href="../assets/css/main.css">
@@ -58,21 +58,35 @@
 					<a href="../modules/generated.html">generated</a>
 				</li>
 				<li>
-					<a href="generated.getsubdomainattransactionrequest.html">GetSubdomainAtTransactionRequest</a>
+					<a href="generated.transactionfeeestimaterequest.html">TransactionFeeEstimateRequest</a>
 				</li>
 			</ul>
-			<h1>Interface GetSubdomainAtTransactionRequest</h1>
+			<h1>Interface TransactionFeeEstimateRequest</h1>
 		</div>
 	</div>
 </header>
 <div class="container container-main">
 	<div class="row">
 		<div class="col-8 col-content">
+			<section class="tsd-panel tsd-comment">
+				<div class="tsd-comment tsd-typography">
+					<div class="lead">
+						<p>POST request for estimated fee</p>
+					</div>
+					<dl class="tsd-comment-tags">
+						<dt>export</dt>
+						<dd></dd>
+						<dt>interface</dt>
+						<dd><p>TransactionFeeEstimateRequest</p>
+						</dd>
+					</dl>
+				</div>
+			</section>
 			<section class="tsd-panel tsd-hierarchy">
 				<h3>Hierarchy</h3>
 				<ul class="tsd-hierarchy">
 					<li>
-						<span class="target">GetSubdomainAtTransactionRequest</span>
+						<span class="target">TransactionFeeEstimateRequest</span>
 					</li>
 				</ul>
 			</section>
@@ -83,7 +97,8 @@
 						<section class="tsd-index-section ">
 							<h3>Properties</h3>
 							<ul class="tsd-index-list">
-								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.getsubdomainattransactionrequest.html#txid" class="tsd-kind-icon">txid</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.transactionfeeestimaterequest.html#estimated_len" class="tsd-kind-icon">estimated_<wbr>len</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.transactionfeeestimaterequest.html#transaction_payload" class="tsd-kind-icon">transaction_<wbr>payload</a></li>
 							</ul>
 						</section>
 					</div>
@@ -92,14 +107,38 @@
 			<section class="tsd-panel-group tsd-member-group ">
 				<h2>Properties</h2>
 				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
-					<a name="txid" class="tsd-anchor"></a>
-					<h3>txid</h3>
-					<div class="tsd-signature tsd-kind-icon">txid<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span></div>
+					<a name="estimated_len" class="tsd-anchor"></a>
+					<h3><span class="tsd-flag ts-flagOptional">Optional</span> estimated_<wbr>len</h3>
+					<div class="tsd-signature tsd-kind-icon">estimated_<wbr>len<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">number</span></div>
 					<aside class="tsd-sources">
 						<ul>
-							<li>Defined in src/generated/apis/NamesApi.ts:86</li>
+							<li>Defined in src/generated/models/TransactionFeeEstimateRequest.ts:33</li>
 						</ul>
 					</aside>
+					<div class="tsd-comment tsd-typography">
+						<dl class="tsd-comment-tags">
+							<dt>memberof</dt>
+							<dd><p>TransactionFeeEstimateRequest</p>
+							</dd>
+						</dl>
+					</div>
+				</section>
+				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
+					<a name="transaction_payload" class="tsd-anchor"></a>
+					<h3>transaction_<wbr>payload</h3>
+					<div class="tsd-signature tsd-kind-icon">transaction_<wbr>payload<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span></div>
+					<aside class="tsd-sources">
+						<ul>
+							<li>Defined in src/generated/models/TransactionFeeEstimateRequest.ts:27</li>
+						</ul>
+					</aside>
+					<div class="tsd-comment tsd-typography">
+						<dl class="tsd-comment-tags">
+							<dt>memberof</dt>
+							<dd><p>TransactionFeeEstimateRequest</p>
+							</dd>
+						</dl>
+					</div>
 				</section>
 			</section>
 		</div>
@@ -128,10 +167,13 @@
 				</ul>
 				<ul class="current">
 					<li class="current tsd-kind-interface tsd-parent-kind-module">
-						<a href="generated.getsubdomainattransactionrequest.html" class="tsd-kind-icon">Get<wbr>Subdomain<wbr>AtTransaction<wbr>Request</a>
+						<a href="generated.transactionfeeestimaterequest.html" class="tsd-kind-icon">Transaction<wbr>Fee<wbr>Estimate<wbr>Request</a>
 						<ul>
 							<li class=" tsd-kind-property tsd-parent-kind-interface">
-								<a href="generated.getsubdomainattransactionrequest.html#txid" class="tsd-kind-icon">txid</a>
+								<a href="generated.transactionfeeestimaterequest.html#estimated_len" class="tsd-kind-icon">estimated_<wbr>len</a>
+							</li>
+							<li class=" tsd-kind-property tsd-parent-kind-interface">
+								<a href="generated.transactionfeeestimaterequest.html#transaction_payload" class="tsd-kind-icon">transaction_<wbr>payload</a>
 							</li>
 						</ul>
 					</li>

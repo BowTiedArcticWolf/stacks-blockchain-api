@@ -3,7 +3,7 @@
 <head>
 	<meta charset="utf-8">
 	<meta http-equiv="X-UA-Compatible" content="IE=edge">
-	<title>NetworkBlockTimesResponseMainnet | @stacks/blockchain-api-client</title>
+	<title>GetNftHistoryRequest | @stacks/blockchain-api-client</title>
 	<meta name="description" content="Documentation for @stacks/blockchain-api-client">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<link rel="stylesheet" href="../assets/css/main.css">
@@ -58,35 +58,21 @@
 					<a href="../modules/generated.html">generated</a>
 				</li>
 				<li>
-					<a href="generated.networkblocktimesresponsemainnet.html">NetworkBlockTimesResponseMainnet</a>
+					<a href="generated.getnfthistoryrequest.html">GetNftHistoryRequest</a>
 				</li>
 			</ul>
-			<h1>Interface NetworkBlockTimesResponseMainnet</h1>
+			<h1>Interface GetNftHistoryRequest</h1>
 		</div>
 	</div>
 </header>
 <div class="container container-main">
 	<div class="row">
 		<div class="col-8 col-content">
-			<section class="tsd-panel tsd-comment">
-				<div class="tsd-comment tsd-typography">
-					<div class="lead">
-						<p>TargetBlockTime</p>
-					</div>
-					<dl class="tsd-comment-tags">
-						<dt>export</dt>
-						<dd></dd>
-						<dt>interface</dt>
-						<dd><p>NetworkBlockTimesResponseMainnet</p>
-						</dd>
-					</dl>
-				</div>
-			</section>
 			<section class="tsd-panel tsd-hierarchy">
 				<h3>Hierarchy</h3>
 				<ul class="tsd-hierarchy">
 					<li>
-						<span class="target">NetworkBlockTimesResponseMainnet</span>
+						<span class="target">GetNftHistoryRequest</span>
 					</li>
 				</ul>
 			</section>
@@ -97,7 +83,12 @@
 						<section class="tsd-index-section ">
 							<h3>Properties</h3>
 							<ul class="tsd-index-list">
-								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.networkblocktimesresponsemainnet.html#target_block_time" class="tsd-kind-icon">target_<wbr>block_<wbr>time</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.getnfthistoryrequest.html#assetidentifier" class="tsd-kind-icon">asset<wbr>Identifier</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.getnfthistoryrequest.html#limit" class="tsd-kind-icon">limit</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.getnfthistoryrequest.html#offset" class="tsd-kind-icon">offset</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.getnfthistoryrequest.html#txmetadata" class="tsd-kind-icon">tx<wbr>Metadata</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.getnfthistoryrequest.html#unanchored" class="tsd-kind-icon">unanchored</a></li>
+								<li class="tsd-kind-property tsd-parent-kind-interface"><a href="generated.getnfthistoryrequest.html#value" class="tsd-kind-icon">value</a></li>
 							</ul>
 						</section>
 					</div>
@@ -106,21 +97,64 @@
 			<section class="tsd-panel-group tsd-member-group ">
 				<h2>Properties</h2>
 				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
-					<a name="target_block_time" class="tsd-anchor"></a>
-					<h3>target_<wbr>block_<wbr>time</h3>
-					<div class="tsd-signature tsd-kind-icon">target_<wbr>block_<wbr>time<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">number</span></div>
+					<a name="assetidentifier" class="tsd-anchor"></a>
+					<h3>asset<wbr>Identifier</h3>
+					<div class="tsd-signature tsd-kind-icon">asset<wbr>Identifier<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span></div>
 					<aside class="tsd-sources">
 						<ul>
-							<li>Defined in <a href="https://github.com/hirosystems/stacks-blockchain-api/blob/f7ea5480/client/src/generated/models/NetworkBlockTimesResponseMainnet.ts#L27">src/generated/models/NetworkBlockTimesResponseMainnet.ts:27</a></li>
+							<li>Defined in src/generated/apis/NonFungibleTokensApi.ts:40</li>
 						</ul>
 					</aside>
-					<div class="tsd-comment tsd-typography">
-						<dl class="tsd-comment-tags">
-							<dt>memberof</dt>
-							<dd><p>NetworkBlockTimesResponseMainnet</p>
-							</dd>
-						</dl>
-					</div>
+				</section>
+				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
+					<a name="limit" class="tsd-anchor"></a>
+					<h3><span class="tsd-flag ts-flagOptional">Optional</span> limit</h3>
+					<div class="tsd-signature tsd-kind-icon">limit<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">number</span></div>
+					<aside class="tsd-sources">
+						<ul>
+							<li>Defined in src/generated/apis/NonFungibleTokensApi.ts:42</li>
+						</ul>
+					</aside>
+				</section>
+				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
+					<a name="offset" class="tsd-anchor"></a>
+					<h3><span class="tsd-flag ts-flagOptional">Optional</span> offset</h3>
+					<div class="tsd-signature tsd-kind-icon">offset<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">number</span></div>
+					<aside class="tsd-sources">
+						<ul>
+							<li>Defined in src/generated/apis/NonFungibleTokensApi.ts:43</li>
+						</ul>
+					</aside>
+				</section>
+				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
+					<a name="txmetadata" class="tsd-anchor"></a>
+					<h3><span class="tsd-flag ts-flagOptional">Optional</span> tx<wbr>Metadata</h3>
+					<div class="tsd-signature tsd-kind-icon">tx<wbr>Metadata<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">boolean</span></div>
+					<aside class="tsd-sources">
+						<ul>
+							<li>Defined in src/generated/apis/NonFungibleTokensApi.ts:45</li>
+						</ul>
+					</aside>
+				</section>
+				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
+					<a name="unanchored" class="tsd-anchor"></a>
+					<h3><span class="tsd-flag ts-flagOptional">Optional</span> unanchored</h3>
+					<div class="tsd-signature tsd-kind-icon">unanchored<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">boolean</span></div>
+					<aside class="tsd-sources">
+						<ul>
+							<li>Defined in src/generated/apis/NonFungibleTokensApi.ts:44</li>
+						</ul>
+					</aside>
+				</section>
+				<section class="tsd-panel tsd-member tsd-kind-property tsd-parent-kind-interface">
+					<a name="value" class="tsd-anchor"></a>
+					<h3>value</h3>
+					<div class="tsd-signature tsd-kind-icon">value<span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span></div>
+					<aside class="tsd-sources">
+						<ul>
+							<li>Defined in src/generated/apis/NonFungibleTokensApi.ts:41</li>
+						</ul>
+					</aside>
 				</section>
 			</section>
 		</div>
@@ -149,10 +183,25 @@
 				</ul>
 				<ul class="current">
 					<li class="current tsd-kind-interface tsd-parent-kind-module">
-						<a href="generated.networkblocktimesresponsemainnet.html" class="tsd-kind-icon">Network<wbr>Block<wbr>Times<wbr>Response<wbr>Mainnet</a>
+						<a href="generated.getnfthistoryrequest.html" class="tsd-kind-icon">Get<wbr>Nft<wbr>History<wbr>Request</a>
 						<ul>
 							<li class=" tsd-kind-property tsd-parent-kind-interface">
-								<a href="generated.networkblocktimesresponsemainnet.html#target_block_time" class="tsd-kind-icon">target_<wbr>block_<wbr>time</a>
+								<a href="generated.getnfthistoryrequest.html#assetidentifier" class="tsd-kind-icon">asset<wbr>Identifier</a>
+							</li>
+							<li class=" tsd-kind-property tsd-parent-kind-interface">
+								<a href="generated.getnfthistoryrequest.html#limit" class="tsd-kind-icon">limit</a>
+							</li>
+							<li class=" tsd-kind-property tsd-parent-kind-interface">
+								<a href="generated.getnfthistoryrequest.html#offset" class="tsd-kind-icon">offset</a>
+							</li>
+							<li class=" tsd-kind-property tsd-parent-kind-interface">
+								<a href="generated.getnfthistoryrequest.html#txmetadata" class="tsd-kind-icon">tx<wbr>Metadata</a>
+							</li>
+							<li class=" tsd-kind-property tsd-parent-kind-interface">
+								<a href="generated.getnfthistoryrequest.html#unanchored" class="tsd-kind-icon">unanchored</a>
+							</li>
+							<li class=" tsd-kind-property tsd-parent-kind-interface">
+								<a href="generated.getnfthistoryrequest.html#value" class="tsd-kind-icon">value</a>
 							</li>
 						</ul>
 					</li>
