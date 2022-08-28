@@ -97,12 +97,15 @@ import {
   NftHoldingInfoWithTxMetadata,
   NftEventWithTxMetadata,
   DbAssetEventTypeId,
+  DbTxGlobalStatus,
 } from './common';
 import {
   AddressTokenOfferingLocked,
   TransactionType,
   AddressUnlockSchedule,
   Block,
+  MempoolTransactionStatus,
+  TransactionStatus,
 } from '@stacks/stacks-blockchain-api-types';
 import { getTxTypeId } from '../api/controllers/db-controller';
 import { isProcessableTokenMetadata } from '../token-metadata/helpers';
@@ -1128,7 +1131,8 @@ export class PgDataStore
   }
 
   async getChainTip(
-    client: ClientBase
+    client: ClientBase,
+    useMaterializedView = true
   ): Promise<{ blockHeight: number; blockHash: string; indexBlockHash: string }> {
     const currentTipBlock = await client.query<{
       block_height: number;
@@ -1138,7 +1142,7 @@ export class PgDataStore
       // The `chain_tip` materialized view is not available during event replay.
       // Since `getChainTip()` is used heavily during event ingestion, we'll fall back to
       // a classic query.
-      this.eventReplay
+      this.eventReplay || !useMaterializedView
         ? `
           SELECT block_height, block_hash, index_block_hash
           FROM blocks
@@ -1178,7 +1182,7 @@ export class PgDataStore
       // Sanity check: ensure incoming microblocks have a `parent_index_block_hash` that matches the API's
       // current known canonical chain tip. We assume this holds true so incoming microblock data is always
       // treated as being built off the current canonical anchor block.
-      const chainTip = await this.getChainTip(client);
+      const chainTip = await this.getChainTip(client, false);
       const nonCanonicalMicroblock = data.microblocks.find(
         mb => mb.parent_index_block_hash !== chainTip.indexBlockHash
       );
@@ -1309,7 +1313,7 @@ export class PgDataStore
   async update(data: DataStoreBlockUpdateData): Promise<void> {
     const tokenMetadataQueueEntries: DbTokenMetadataQueueEntry[] = [];
     await this.queryTx(async client => {
-      const chainTip = await this.getChainTip(client);
+      const chainTip = await this.getChainTip(client, false);
       await this.handleReorg(client, data.block, chainTip.blockHeight);
       // If the incoming block is not of greater height than current chain tip, then store data as non-canonical.
       const isCanonical = data.block.block_height > chainTip.blockHeight;
@@ -3561,7 +3565,7 @@ export class PgDataStore
   async updateMempoolTxs({ mempoolTxs: txs }: { mempoolTxs: DbMempoolTx[] }): Promise<void> {
     const updatedTxs: DbMempoolTx[] = [];
     await this.queryTx(async client => {
-      const chainTip = await this.getChainTip(client);
+      const chainTip = await this.getChainTip(client, false);
       for (const tx of txs) {
         const result = await client.query(
           `
@@ -4050,6 +4054,46 @@ export class PgDataStore
       const row = result.rows[0];
       const tx = this.parseTxQueryResult(row);
       return { found: true, result: tx };
+    });
+  }
+
+  async getTxStatus(txId: string): Promise<FoundOrNot<DbTxGlobalStatus>> {
+    return this.queryTx(async client => {
+      const chainResult = await client.query<DbTxGlobalStatus>(
+        `SELECT status, index_block_hash, microblock_hash
+        FROM txs
+        WHERE tx_id = $1 AND canonical = TRUE AND microblock_canonical = TRUE
+        LIMIT 1`,
+        [hexToBuffer(txId)]
+      );
+      if (chainResult.rowCount > 0) {
+        return {
+          found: true,
+          result: {
+            status: chainResult.rows[0].status,
+            index_block_hash: chainResult.rows[0].index_block_hash,
+            microblock_hash: chainResult.rows[0].microblock_hash,
+          },
+        };
+      }
+      const mempoolResult = await client.query<{ status: number }>(
+        `SELECT status
+        FROM mempool_txs
+        WHERE tx_id = $1
+        LIMIT 1`,
+        [hexToBuffer(txId)]
+      );
+      if (mempoolResult.rowCount > 0) {
+        return {
+          found: true,
+          result: {
+            status: mempoolResult.rows[0].status,
+            index_block_hash: Buffer.from([]),
+            microblock_hash: Buffer.from([]),
+          },
+        };
+      }
+      return { found: false } as const;
     });
   }
 
@@ -5391,7 +5435,8 @@ export class PgDataStore
     if (this.eventReplay && skipDuringEventReplay) {
       return;
     }
-    await client.query(`REFRESH MATERIALIZED VIEW ${viewName}`);
+    const concurrently = isProdEnv ? 'CONCURRENTLY' : '';
+    await client.query(`REFRESH MATERIALIZED VIEW ${concurrently} ${viewName}`);
   }
 
   async getSmartContractByTrait(args: {
