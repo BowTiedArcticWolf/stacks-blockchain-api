@@ -1,14 +1,13 @@
 import { inspect } from 'util';
 import * as net from 'net';
-import { Server, createServer } from 'http';
+import { createServer } from 'http';
 import * as express from 'express';
 import * as bodyParser from 'body-parser';
 import { asyncHandler } from '../api/async-handler';
 import PQueue from 'p-queue';
 import * as expressWinston from 'express-winston';
 import * as winston from 'winston';
-
-import { hexToBuffer, logError, logger, digestSha512_256, I32_MAX, LogLevel } from '../helpers';
+import { hexToBuffer, logError, logger, LogLevel } from '../helpers';
 import {
   CoreNodeBlockMessage,
   CoreNodeEventType,
@@ -20,8 +19,6 @@ import {
   CoreNodeEvent,
 } from './core-node-message';
 import {
-  DataStore,
-  createDbTxFromCoreMsg,
   DbEventBase,
   DbSmartContractEvent,
   DbStxEvent,
@@ -31,19 +28,14 @@ import {
   DbNftEvent,
   DbBlock,
   DataStoreBlockUpdateData,
-  createDbMempoolTxFromCoreMsg,
   DbStxLockEvent,
   DbMinerReward,
   DbBurnchainReward,
-  getTxDbStatus,
   DbRewardSlotHolder,
-  DbBnsName,
-  DbBnsNamespace,
-  DbBnsSubdomain,
-  DbMicroblockPartial,
   DataStoreMicroblockUpdateData,
   DataStoreTxEventData,
   DbMicroblock,
+  DataStoreAttachmentData,
 } from '../datastore/common';
 import {
   getTxSenderAddress,
@@ -61,35 +53,30 @@ import {
   TxPayloadTypeID,
 } from 'stacks-encoding-native-js';
 import { ChainID } from '@stacks/transactions';
+import { BnsContractIdentifier } from './bns/bns-constants';
 import {
-  getFunctionName,
-  getNewOwner,
-  parseNameRawValue,
-  parseNamespaceRawValue,
-  parseResolver,
-  parseZoneFileTxt,
-} from '../bns-helpers';
-
+  parseNameFromContractEvent,
+  parseNameRenewalWithNoZonefileHashFromContractCall,
+  parseNamespaceFromContractEvent,
+} from './bns/bns-helpers';
+import { PgWriteStore } from '../datastore/pg-write-store';
 import {
-  printTopic,
-  namespaceReadyFunction,
-  nameFunctions,
-  BnsContractIdentifier,
-} from '../bns-constants';
-
-import * as zoneFileParser from 'zone-file';
+  createDbMempoolTxFromCoreMsg,
+  createDbTxFromCoreMsg,
+  getTxDbStatus,
+} from '../datastore/helpers';
 
 async function handleRawEventRequest(
   eventPath: string,
-  payload: string,
-  db: DataStore
+  payload: any,
+  db: PgWriteStore
 ): Promise<void> {
   await db.storeRawEventRequest(eventPath, payload);
 }
 
 async function handleBurnBlockMessage(
   burnBlockMsg: CoreNodeBurnBlockMessage,
-  db: DataStore
+  db: PgWriteStore
 ): Promise<void> {
   logger.verbose(
     `Received burn block message hash ${burnBlockMsg.burn_block_hash}, height: ${burnBlockMsg.burn_block_height}, reward recipients: ${burnBlockMsg.reward_recipients.length}`
@@ -128,13 +115,12 @@ async function handleBurnBlockMessage(
   });
 }
 
-async function handleMempoolTxsMessage(rawTxs: string[], db: DataStore): Promise<void> {
+async function handleMempoolTxsMessage(rawTxs: string[], db: PgWriteStore): Promise<void> {
   logger.verbose(`Received ${rawTxs.length} mempool transactions`);
   // TODO: mempool-tx receipt date should be sent from the core-node
   const receiptDate = Math.round(Date.now() / 1000);
-  const rawTxBuffers = rawTxs.map(str => hexToBuffer(str));
-  const decodedTxs = rawTxBuffers.map(buffer => {
-    const parsedTx = decodeTransaction(buffer);
+  const decodedTxs = rawTxs.map(str => {
+    const parsedTx = decodeTransaction(str);
     const txSender = getTxSenderAddress(parsedTx);
     const sponsorAddress = getTxSponsorAddress(parsedTx);
     return {
@@ -142,7 +128,7 @@ async function handleMempoolTxsMessage(rawTxs: string[], db: DataStore): Promise
       sender: txSender,
       sponsorAddress,
       txData: parsedTx,
-      rawTx: buffer,
+      rawTx: str,
     };
   });
   const dbMempoolTxs = decodedTxs.map(tx => {
@@ -162,7 +148,7 @@ async function handleMempoolTxsMessage(rawTxs: string[], db: DataStore): Promise
 
 async function handleDroppedMempoolTxsMessage(
   msg: CoreNodeDropMempoolTxMessage,
-  db: DataStore
+  db: PgWriteStore
 ): Promise<void> {
   logger.verbose(`Received ${msg.dropped_txids.length} dropped mempool txs`);
   const dbTxStatus = getTxDbStatus(msg.reason);
@@ -172,7 +158,7 @@ async function handleDroppedMempoolTxsMessage(
 async function handleMicroblockMessage(
   chainId: ChainID,
   msg: CoreNodeMicroblockMessage,
-  db: DataStore
+  db: PgWriteStore
 ): Promise<void> {
   logger.verbose(`Received microblock with ${msg.transactions.length} txs`);
   const dbMicroblocks = parseMicroblocksFromTxs({
@@ -213,10 +199,15 @@ async function handleMicroblockMessage(
   });
   const updateData: DataStoreMicroblockUpdateData = {
     microblocks: dbMicroblocks,
-    txs: parseDataStoreTxEventData(parsedTxs, msg.events, {
-      block_height: -1, // TODO: fill during initial db insert
-      index_block_hash: '',
-    }),
+    txs: parseDataStoreTxEventData(
+      parsedTxs,
+      msg.events,
+      {
+        block_height: -1, // TODO: fill during initial db insert
+        index_block_hash: '',
+      },
+      chainId
+    ),
   };
   await db.updateMicroblocks(updateData);
 }
@@ -224,7 +215,7 @@ async function handleMicroblockMessage(
 async function handleBlockMessage(
   chainId: ChainID,
   msg: CoreNodeBlockMessage,
-  db: DataStore
+  db: PgWriteStore
 ): Promise<void> {
   const parsedTxs: CoreNodeParsedTxMessage[] = [];
   const blockData: CoreNodeMsgBlockData = {
@@ -313,7 +304,7 @@ async function handleBlockMessage(
     block: dbBlock,
     microblocks: dbMicroblocks,
     minerRewards: dbMinerRewards,
-    txs: parseDataStoreTxEventData(parsedTxs, msg.events, msg),
+    txs: parseDataStoreTxEventData(parsedTxs, msg.events, msg, chainId),
   };
 
   await db.update(dbData);
@@ -325,7 +316,8 @@ function parseDataStoreTxEventData(
   blockData: {
     block_height: number;
     index_block_hash: string;
-  }
+  },
+  chainId: ChainID
 ): DataStoreTxEventData[] {
   const dbData: DataStoreTxEventData[] = parsedTxs.map(tx => {
     const dbTx: DataStoreBlockUpdateData['txs'][number] = {
@@ -339,16 +331,29 @@ function parseDataStoreTxEventData(
       names: [],
       namespaces: [],
     };
-    if (tx.parsed_tx.payload.type_id === TxPayloadTypeID.SmartContract) {
-      const contractId = `${tx.sender_address}.${tx.parsed_tx.payload.contract_name}`;
-      dbTx.smartContracts.push({
-        tx_id: tx.core_tx.txid,
-        contract_id: contractId,
-        block_height: blockData.block_height,
-        source_code: tx.parsed_tx.payload.code_body,
-        abi: JSON.stringify(tx.core_tx.contract_abi),
-        canonical: true,
-      });
+    switch (tx.parsed_tx.payload.type_id) {
+      case TxPayloadTypeID.SmartContract:
+        const contractId = `${tx.sender_address}.${tx.parsed_tx.payload.contract_name}`;
+        dbTx.smartContracts.push({
+          tx_id: tx.core_tx.txid,
+          contract_id: contractId,
+          block_height: blockData.block_height,
+          source_code: tx.parsed_tx.payload.code_body,
+          abi: JSON.stringify(tx.core_tx.contract_abi),
+          canonical: true,
+        });
+        break;
+      case TxPayloadTypeID.ContractCall:
+        // Name renewals can happen without a zonefile_hash. In that case, the BNS contract does NOT
+        // emit a `name-renewal` contract log, causing us to miss this event. This function catches
+        // those cases.
+        const name = parseNameRenewalWithNoZonefileHashFromContractCall(tx, chainId);
+        if (name) {
+          dbTx.names.push(name);
+        }
+        break;
+      default:
+        break;
     }
     return dbTx;
   });
@@ -378,54 +383,27 @@ function parseDataStoreTxEventData(
           event_type: DbEventTypeId.SmartContractLog,
           contract_identifier: event.contract_event.contract_identifier,
           topic: event.contract_event.topic,
-          value: hexToBuffer(event.contract_event.raw_value),
+          value: event.contract_event.raw_value,
         };
         dbTx.contractLogEvents.push(entry);
-        if (
-          event.contract_event.topic === printTopic &&
-          (event.contract_event.contract_identifier === BnsContractIdentifier.mainnet ||
-            event.contract_event.contract_identifier === BnsContractIdentifier.testnet)
-        ) {
-          const functionName = getFunctionName(event.txid, parsedTxs);
-          if (nameFunctions.includes(functionName)) {
-            const attachment = parseNameRawValue(event.contract_event.raw_value);
-            let name_address = attachment.attachment.metadata.tx_sender.address;
-            if (functionName === 'name-transfer') {
-              const new_owner = getNewOwner(event.txid, parsedTxs);
-              if (new_owner) {
-                name_address = new_owner;
-              }
-            }
-            const name: DbBnsName = {
-              name: attachment.attachment.metadata.name.concat(
-                '.',
-                attachment.attachment.metadata.namespace
-              ),
-              namespace_id: attachment.attachment.metadata.namespace,
-              address: name_address,
-              expire_block: 0,
-              registered_at: blockData.block_height,
-              zonefile_hash: attachment.attachment.hash,
-              zonefile: '', // zone file will be updated in  /attachments/new
-              tx_id: event.txid,
-              tx_index: entry.tx_index,
-              status: attachment.attachment.metadata.op,
-              canonical: true,
-            };
-            dbTx.names.push(name);
-          }
-          if (functionName === namespaceReadyFunction) {
-            // event received for namespaces
-            const namespace: DbBnsNamespace | undefined = parseNamespaceRawValue(
-              event.contract_event.raw_value,
-              blockData.block_height,
-              event.txid,
-              entry.tx_index
-            );
-            if (namespace != undefined) {
-              dbTx.namespaces.push(namespace);
-            }
-          }
+        // Check if we have new BNS names or namespaces.
+        const parsedTx = parsedTxs.find(entry => entry.core_tx.txid === event.txid);
+        if (!parsedTx) {
+          throw new Error(`Unexpected missing tx during BNS parsing by tx_id ${event.txid}`);
+        }
+        const name = parseNameFromContractEvent(
+          event,
+          parsedTx,
+          events,
+          blockData.block_height,
+          chainId
+        );
+        if (name) {
+          dbTx.names.push(name);
+        }
+        const namespace = parseNamespaceFromContractEvent(event, parsedTx, blockData.block_height);
+        if (namespace) {
+          dbTx.namespaces.push(namespace);
         }
         break;
       }
@@ -519,7 +497,7 @@ function parseDataStoreTxEventData(
           recipient: event.nft_transfer_event.recipient,
           sender: event.nft_transfer_event.sender,
           asset_identifier: event.nft_transfer_event.asset_identifier,
-          value: hexToBuffer(event.nft_transfer_event.raw_value),
+          value: event.nft_transfer_event.raw_value,
         };
         dbTx.nftEvents.push(entry);
         break;
@@ -531,7 +509,7 @@ function parseDataStoreTxEventData(
           asset_event_type_id: DbAssetEventTypeId.Mint,
           recipient: event.nft_mint_event.recipient,
           asset_identifier: event.nft_mint_event.asset_identifier,
-          value: hexToBuffer(event.nft_mint_event.raw_value),
+          value: event.nft_mint_event.raw_value,
         };
         dbTx.nftEvents.push(entry);
         break;
@@ -543,7 +521,7 @@ function parseDataStoreTxEventData(
           asset_event_type_id: DbAssetEventTypeId.Burn,
           sender: event.nft_burn_event.sender,
           asset_identifier: event.nft_burn_event.asset_identifier,
-          value: hexToBuffer(event.nft_burn_event.raw_value),
+          value: event.nft_burn_event.raw_value,
         };
         dbTx.nftEvents.push(entry);
         break;
@@ -574,109 +552,62 @@ function parseDataStoreTxEventData(
   return dbData;
 }
 
-async function handleNewAttachmentMessage(msg: CoreNodeAttachmentMessage[], db: DataStore) {
-  for (const attachment of msg) {
-    if (
-      attachment.contract_id === BnsContractIdentifier.mainnet ||
-      attachment.contract_id === BnsContractIdentifier.testnet
-    ) {
-      const metadataCV = decodeClarityValue<
-        ClarityValueTuple<{
-          op: ClarityValueStringAscii;
-          name: ClarityValueBuffer;
-          namespace: ClarityValueBuffer;
-        }>
-      >(attachment.metadata);
-      const op = metadataCV.data['op'].data;
-      const zonefile = Buffer.from(attachment.content.slice(2), 'hex').toString();
-      const zoneFileHash = attachment.content_hash;
-      if (op === 'name-update') {
-        const name = hexToBuffer(metadataCV.data['name'].buffer).toString('utf8');
-        const namespace = hexToBuffer(metadataCV.data['namespace'].buffer).toString('utf8');
-        const zoneFileContents = zoneFileParser.parseZoneFile(zonefile);
-        const zoneFileTxt = zoneFileContents.txt;
-        const blockData = {
-          index_block_hash: '',
-          parent_index_block_hash: '',
-          microblock_hash: '',
-          microblock_sequence: I32_MAX,
-          microblock_canonical: true,
-        };
-        // Case for subdomain
-        if (zoneFileTxt) {
-          // get unresolved subdomain
-          let isCanonical = true;
-          const dbTx = await db.getTxStrict({
-            txId: attachment.tx_id,
-            indexBlockHash: attachment.index_block_hash,
-          });
-          if (dbTx.found) {
-            isCanonical = dbTx.result.canonical;
-            blockData.index_block_hash = dbTx.result.index_block_hash;
-            blockData.parent_index_block_hash = dbTx.result.parent_index_block_hash;
-            blockData.microblock_hash = dbTx.result.microblock_hash;
-            blockData.microblock_sequence = dbTx.result.microblock_sequence;
-            blockData.microblock_canonical = dbTx.result.microblock_canonical;
-          } else {
-            logger.warn(
-              `Could not find transaction ${attachment.tx_id} associated with attachment`
-            );
-          }
-          // case for subdomain
-          const subdomains: DbBnsSubdomain[] = [];
-          for (let i = 0; i < zoneFileTxt.length; i++) {
-            const zoneFile = zoneFileTxt[i];
-            const parsedTxt = parseZoneFileTxt(zoneFile.txt);
-            if (parsedTxt.owner === '') continue; //if txt has no owner , skip it
-            const subdomain: DbBnsSubdomain = {
-              name: name.concat('.', namespace),
-              namespace_id: namespace,
-              fully_qualified_subdomain: zoneFile.name.concat('.', name, '.', namespace),
-              owner: parsedTxt.owner,
-              zonefile_hash: parsedTxt.zoneFileHash,
-              zonefile: parsedTxt.zoneFile,
-              tx_id: attachment.tx_id,
-              tx_index: -1,
-              canonical: isCanonical,
-              parent_zonefile_hash: attachment.content_hash.slice(2),
-              parent_zonefile_index: 0, //TODO need to figure out this field
-              block_height: Number.parseInt(attachment.block_height, 10),
-              zonefile_offset: 1,
-              resolver: zoneFileContents.uri ? parseResolver(zoneFileContents.uri) : '',
-            };
-            subdomains.push(subdomain);
-          }
-          await db.resolveBnsSubdomains(blockData, subdomains);
-        }
+async function handleNewAttachmentMessage(msg: CoreNodeAttachmentMessage[], db: PgWriteStore) {
+  const attachments = msg
+    .map(message => {
+      if (
+        message.contract_id === BnsContractIdentifier.mainnet ||
+        message.contract_id === BnsContractIdentifier.testnet
+      ) {
+        const metadataCV = decodeClarityValue<
+          ClarityValueTuple<{
+            op: ClarityValueStringAscii;
+            name: ClarityValueBuffer;
+            namespace: ClarityValueBuffer;
+          }>
+        >(message.metadata);
+        return {
+          op: metadataCV.data['op'].data,
+          zonefile: message.content.slice(2),
+          name: hexToBuffer(metadataCV.data['name'].buffer).toString('utf8'),
+          namespace: hexToBuffer(metadataCV.data['namespace'].buffer).toString('utf8'),
+          zonefileHash: message.content_hash,
+          txId: message.tx_id,
+          indexBlockHash: message.index_block_hash,
+          blockHeight: Number.parseInt(message.block_height, 10),
+        } as DataStoreAttachmentData;
       }
-      await db.updateZoneContent(zonefile, zoneFileHash, attachment.tx_id);
-    }
-  }
+    })
+    .filter((msg): msg is DataStoreAttachmentData => !!msg);
+  await db.updateAttachments(attachments);
 }
 
 interface EventMessageHandler {
-  handleRawEventRequest(eventPath: string, payload: string, db: DataStore): Promise<void> | void;
+  handleRawEventRequest(eventPath: string, payload: any, db: PgWriteStore): Promise<void> | void;
   handleBlockMessage(
     chainId: ChainID,
     msg: CoreNodeBlockMessage,
-    db: DataStore
+    db: PgWriteStore
   ): Promise<void> | void;
   handleMicroblockMessage(
     chainId: ChainID,
     msg: CoreNodeMicroblockMessage,
-    db: DataStore
+    db: PgWriteStore
   ): Promise<void> | void;
-  handleMempoolTxs(rawTxs: string[], db: DataStore): Promise<void> | void;
-  handleBurnBlock(msg: CoreNodeBurnBlockMessage, db: DataStore): Promise<void> | void;
-  handleDroppedMempoolTxs(msg: CoreNodeDropMempoolTxMessage, db: DataStore): Promise<void> | void;
-  handleNewAttachment(msg: CoreNodeAttachmentMessage[], db: DataStore): Promise<void> | void;
+  handleMempoolTxs(rawTxs: string[], db: PgWriteStore): Promise<void> | void;
+  handleBurnBlock(msg: CoreNodeBurnBlockMessage, db: PgWriteStore): Promise<void> | void;
+  handleDroppedMempoolTxs(
+    msg: CoreNodeDropMempoolTxMessage,
+    db: PgWriteStore
+  ): Promise<void> | void;
+  handleNewAttachment(msg: CoreNodeAttachmentMessage[], db: PgWriteStore): Promise<void> | void;
 }
 
 function createMessageProcessorQueue(): EventMessageHandler {
   // Create a promise queue so that only one message is handled at a time.
   const processorQueue = new PQueue({ concurrency: 1 });
   const handler: EventMessageHandler = {
-    handleRawEventRequest: (eventPath: string, payload: string, db: DataStore) => {
+    handleRawEventRequest: (eventPath: string, payload: any, db: PgWriteStore) => {
       return processorQueue
         .add(() => handleRawEventRequest(eventPath, payload, db))
         .catch(e => {
@@ -684,7 +615,7 @@ function createMessageProcessorQueue(): EventMessageHandler {
           throw e;
         });
     },
-    handleBlockMessage: (chainId: ChainID, msg: CoreNodeBlockMessage, db: DataStore) => {
+    handleBlockMessage: (chainId: ChainID, msg: CoreNodeBlockMessage, db: PgWriteStore) => {
       return processorQueue
         .add(() => handleBlockMessage(chainId, msg, db))
         .catch(e => {
@@ -692,7 +623,11 @@ function createMessageProcessorQueue(): EventMessageHandler {
           throw e;
         });
     },
-    handleMicroblockMessage: (chainId: ChainID, msg: CoreNodeMicroblockMessage, db: DataStore) => {
+    handleMicroblockMessage: (
+      chainId: ChainID,
+      msg: CoreNodeMicroblockMessage,
+      db: PgWriteStore
+    ) => {
       return processorQueue
         .add(() => handleMicroblockMessage(chainId, msg, db))
         .catch(e => {
@@ -700,7 +635,7 @@ function createMessageProcessorQueue(): EventMessageHandler {
           throw e;
         });
     },
-    handleBurnBlock: (msg: CoreNodeBurnBlockMessage, db: DataStore) => {
+    handleBurnBlock: (msg: CoreNodeBurnBlockMessage, db: PgWriteStore) => {
       return processorQueue
         .add(() => handleBurnBlockMessage(msg, db))
         .catch(e => {
@@ -708,7 +643,7 @@ function createMessageProcessorQueue(): EventMessageHandler {
           throw e;
         });
     },
-    handleMempoolTxs: (rawTxs: string[], db: DataStore) => {
+    handleMempoolTxs: (rawTxs: string[], db: PgWriteStore) => {
       return processorQueue
         .add(() => handleMempoolTxsMessage(rawTxs, db))
         .catch(e => {
@@ -716,7 +651,7 @@ function createMessageProcessorQueue(): EventMessageHandler {
           throw e;
         });
     },
-    handleDroppedMempoolTxs: (msg: CoreNodeDropMempoolTxMessage, db: DataStore) => {
+    handleDroppedMempoolTxs: (msg: CoreNodeDropMempoolTxMessage, db: PgWriteStore) => {
       return processorQueue
         .add(() => handleDroppedMempoolTxsMessage(msg, db))
         .catch(e => {
@@ -724,7 +659,7 @@ function createMessageProcessorQueue(): EventMessageHandler {
           throw e;
         });
     },
-    handleNewAttachment: (msg: CoreNodeAttachmentMessage[], db: DataStore) => {
+    handleNewAttachment: (msg: CoreNodeAttachmentMessage[], db: PgWriteStore) => {
       return processorQueue
         .add(() => handleNewAttachmentMessage(msg, db))
         .catch(e => {
@@ -743,7 +678,7 @@ export type EventStreamServer = net.Server & {
 };
 
 export async function startEventServer(opts: {
-  datastore: DataStore;
+  datastore: PgWriteStore;
   chainId: ChainID;
   messageHandler?: EventMessageHandler;
   /** If not specified, this is read from the STACKS_CORE_EVENT_HOST env var. */
@@ -798,7 +733,7 @@ export async function startEventServer(opts: {
     asyncHandler(async (req, res, next) => {
       const eventPath = req.path;
       let payload = JSON.stringify(req.body);
-      await messageHandler.handleRawEventRequest(eventPath, payload, db);
+      await messageHandler.handleRawEventRequest(eventPath, req.body, db);
       if (logger.isDebugEnabled()) {
         // Skip logging massive event payloads, this _should_ only exclude the genesis block payload which is ~80 MB.
         if (payload.length > 10_000_000) {

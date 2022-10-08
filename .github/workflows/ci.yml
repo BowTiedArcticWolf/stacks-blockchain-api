@@ -505,6 +505,7 @@ jobs:
             @semantic-release/changelog
             @semantic-release/git
             @semantic-release/exec
+            conventional-changelog-conventionalcommits
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1

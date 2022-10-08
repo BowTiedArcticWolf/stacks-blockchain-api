@@ -52,6 +52,7 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
       type: 'smallint',
       notNull: true,
     },
+    event_index: 'integer',
     status: {
       type: 'string',
       notNull: false
@@ -83,9 +84,17 @@ export async function up(pgm: MigrationBuilder): Promise<void> {
     },
   });
 
-  pgm.createIndex('names', 'tx_id', { method: 'hash' });
-  pgm.createIndex('names', 'name', { method: 'hash' });
-  pgm.createIndex('names', 'index_block_hash', { method: 'hash' });
-  pgm.createIndex('names', 'microblock_hash', { method: 'hash' });
-  pgm.createIndex('names', [{ name: 'registered_at', sort: 'DESC' }]);
+  pgm.createIndex('names', 'namespace_id');
+  pgm.createIndex('names', 'index_block_hash');
+  pgm.createIndex('names', [
+    { name: 'registered_at', sort: 'DESC' },
+    { name: 'microblock_sequence', sort: 'DESC' },
+    { name: 'tx_index', sort: 'DESC' },
+    { name: 'event_index', sort: 'DESC' }
+  ]);
+  pgm.addConstraint(
+    'names',
+    'unique_name_tx_id_index_block_hash_microblock_hash_event_index',
+    'UNIQUE(name, tx_id, index_block_hash, microblock_hash, event_index)'
+  );
 }

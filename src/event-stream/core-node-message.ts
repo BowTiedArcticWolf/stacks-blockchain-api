@@ -25,7 +25,7 @@ interface CoreNodeEventBase {
   committed: boolean;
 }
 
-interface SmartContractEvent extends CoreNodeEventBase {
+export interface SmartContractEvent extends CoreNodeEventBase {
   type: CoreNodeEventType.ContractEvent;
   contract_event: {
     /** Fully qualified contract ID, e.g. "ST2ZRX0K27GW0SP3GJCEMHD95TQGJMKB7G9Y0X1MH.kv-store" */
@@ -76,7 +76,7 @@ export interface StxLockEvent extends CoreNodeEventBase {
   };
 }
 
-interface NftTransferEvent extends CoreNodeEventBase {
+export interface NftTransferEvent extends CoreNodeEventBase {
   type: CoreNodeEventType.NftTransferEvent;
   nft_transfer_event: {
     /** Fully qualified asset ID, e.g. "ST2ZRX0K27GW0SP3GJCEMHD95TQGJMKB7G9Y0X1MH.contract-name.asset-name" */
@@ -228,7 +228,7 @@ export interface CoreNodeBlockMessage {
 export interface CoreNodeParsedTxMessage {
   core_tx: CoreNodeTxMessage;
   parsed_tx: DecodedTxResult;
-  raw_tx: Buffer;
+  raw_tx: string;
   nonce: number;
   sender_address: string;
   sponsor_address: string | undefined;
